@@ -123,6 +123,7 @@ def _migrate(conn):
         ("utilities", "TEXT"), ("deposit", "TEXT"), ("min_term", "TEXT"),
         ("restrictions", "TEXT"), ("backup_power", "TEXT"), ("real_cost", "INTEGER"),
         ("llm_done", "INTEGER"), ("price_prev", "INTEGER"), ("price_drop", "INTEGER"),
+        ("days_listed", "INTEGER"),
     ):
         if column not in have:
             conn.execute(f"ALTER TABLE ads ADD COLUMN {column} {decl}")
@@ -158,22 +159,6 @@ def upsert(conn, ad):
             [ad[k] for k in present] + [now(), ad["id"]],
         )
     return is_new
-
-
-def find_duplicate(conn, ad):
-    """Той самий об'єкт від іншого продавця: збіг ціни, площі, поверху й вулиці."""
-    if not ad.get("area") or not ad.get("street"):
-        return None
-    row = conn.execute(
-        """SELECT id FROM ads
-           WHERE id != ? AND dup_of IS NULL
-             AND price = ? AND abs(area - ?) < 1.5
-             AND ifnull(floor, -1) = ifnull(?, -1)
-             AND street = ?
-           LIMIT 1""",
-        (ad["id"], ad.get("price"), ad.get("area"), ad.get("floor"), ad.get("street")),
-    ).fetchone()
-    return row["id"] if row else None
 
 
 def _norm_street(street):
@@ -304,6 +289,24 @@ def record_price(conn, ad_id, price):
                      (ad_id, price, now()))
         return prev["price"]
     return None
+
+
+def refresh_market_signals(conn):
+    """Проставляє падіння ціни й скільки днів висить — по всій базі.
+
+    Довго висить = або переоцінене, або має ваду, яку не видно з фото.
+    Падіння ціни навпаки: власник поступливий, є з чим іти торгуватись.
+    """
+    updated = 0
+    for row in conn.execute("SELECT id, first_seen, created_time FROM ads").fetchall():
+        drop, days = market_signals(conn, row["id"], row["created_time"] or row["first_seen"])
+        conn.execute(
+            "UPDATE ads SET price_drop = coalesce(?, price_drop), days_listed = ? WHERE id = ?",
+            (drop, days, row["id"]),
+        )
+        updated += 1
+    conn.commit()
+    return updated
 
 
 def market_signals(conn, ad_id, first_seen):

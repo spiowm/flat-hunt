@@ -155,6 +155,15 @@ def score(ad, cfg):
     if (ad.get("utilities") or "") == "входить":
         pts += 4
 
+    # Довго висить — ринок його вже подивився й не взяв
+    days = ad.get("days_listed") or 0
+    if days >= 30:
+        pts -= 8
+    elif days >= 14:
+        pts -= 4
+    if (ad.get("price_drop") or 0) > 0:
+        pts += 5      # власник готовий рухатись у ціні
+
     haystack = f"{text} {(ad.get('restrictions') or '').lower()}"
     for phrase, penalty in (cfg.get("penalise_llm") or {}).items():
         if phrase.lower() in haystack:

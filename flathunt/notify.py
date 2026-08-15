@@ -96,6 +96,10 @@ def card(ad, anchor=None):
     if drop and drop > 0:
         lines.append(f"📉 <b>ціна впала на {drop:,} ₴</b> — можна торгуватись".replace(",", " "))
 
+    days = _get(ad, "days_listed")
+    if days and days >= 14:
+        lines.append(f"🕰 висить {days} дн. — або переоцінене, або є вада")
+
     level = _get(ad, "risk_level")
     if level:
         flags = _get(ad, "risk_flags", "")
@@ -109,15 +113,16 @@ def card(ad, anchor=None):
 
     lines.append(f"⭐ {_get(ad, 'score', 0)}/100")
 
+    # Мітка на карті йде окремим повідомленням через sendLocation, тож
+    # посилання «подивитись на карті» тут було б третім способом показати
+    # те саме. Лишаємо тільки маршрут — він єдиний дає нову інформацію.
     links = [f'<a href="{html.escape(str(_get(ad, "url", "")))}">Оголошення</a>']
     lat, lon = _get(ad, "lat"), _get(ad, "lon")
-    if lat and lon:
-        links.append(f'<a href="https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=17/{lat}/{lon}">Карта</a>')
-        if anchor:
-            links.append(
-                f'<a href="https://www.google.com/maps/dir/?api=1&origin={lat},{lon}'
-                f'&destination={anchor["lat"]},{anchor["lon"]}&travelmode=walking">Пішки до Анни</a>'
-            )
+    if lat and lon and anchor:
+        links.append(
+            f'<a href="https://www.google.com/maps/dir/?api=1&origin={lat},{lon}'
+            f'&destination={anchor["lat"]},{anchor["lon"]}&travelmode=walking">Маршрут пішки</a>'
+        )
     lines.append(" · ".join(links))
 
     return "\n".join(lines)

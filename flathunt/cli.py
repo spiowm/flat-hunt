@@ -141,6 +141,7 @@ def cmd_collect(args):
             conn.commit()
 
     photo.fill_missing(conn, limit=60)
+    store.refresh_market_signals(conn)
 
     dups = store.sweep_duplicates(conn)
     conn.commit()
@@ -332,7 +333,15 @@ def cmd_stats(args):
     print("від власника:       ", q("SELECT count(*) FROM ads WHERE is_business = 0"))
     print("з розпізнаною вул.: ", q("SELECT count(*) FROM ads WHERE street IS NOT NULL"))
     print("з координатами:     ", q("SELECT count(*) FROM ads WHERE dist_km IS NOT NULL"))
-    print("надіслано:          ", q("SELECT count(*) FROM ads WHERE notified = 1"))
+    print("розібрано моделлю:  ", q("SELECT count(*) FROM ads WHERE llm_done = 1"))
+    print("висить 30+ днів:    ", q("SELECT count(*) FROM ads WHERE days_listed >= 30"))
+    conn2 = conn.execute("SELECT chat_id, count(*) n FROM notifications GROUP BY chat_id").fetchall()
+    if conn2:
+        print("надіслано:")
+        for row in conn2:
+            print(f"   {row['n']:>4}  chat {row['chat_id']}")
+    else:
+        print("надіслано:           нічого")
     print("\nпричини відсіву:")
     for row in conn.execute(
         "SELECT rejected, count(*) n FROM ads WHERE rejected IS NOT NULL GROUP BY rejected ORDER BY n DESC LIMIT 12"

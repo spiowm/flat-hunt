@@ -48,24 +48,41 @@ def push(conn, cli):
             [UpdateOne({"_id": g["q"]}, {"$set": {**g, "_id": g["q"]}}, upsert=True) for g in geo],
             ordered=False,
         )
+
+    # Саме ця таблиця, а не колонка ads.notified, вирішує, чи піде
+    # картка ще раз. Розсилка персональна, тож ключ — пара
+    # оголошення й chat_id.
+    sent = [dict(r) for r in conn.execute("SELECT * FROM notifications")]
+    if sent:
+        db.notifications.bulk_write(
+            [UpdateOne({"_id": f"{n['ad_id']}|{n['chat_id']}"},
+                       {"$set": {**n, "_id": f"{n['ad_id']}|{n['chat_id']}"}}, upsert=True)
+             for n in sent],
+            ordered=False,
+        )
     return len(ads), len(geo)
 
 
 def pull(conn, cli):
     """Забирає з Mongo те, чого немає локально.
 
-    Позначка notified об'єднується за АБО: якщо десь уже надіслано,
-    вдруге не шлемо.
+    Позначки розсилки об'єднуються: якщо картка вже пішла комусь
+    із будь-якої машини, вдруге вона не піде.
     """
     db = cli[DB_NAME]
     merged_ads = merged_geo = 0
 
-    local_notified = {r["id"] for r in conn.execute("SELECT id FROM ads WHERE notified = 1")}
-    for doc in db.ads.find({}, {"id": 1, "notified": 1, "first_seen": 1}):
-        ad_id = doc.get("id") or doc.get("_id")
-        if doc.get("notified") and ad_id not in local_notified:
-            cur = conn.execute("UPDATE ads SET notified = 1 WHERE id = ?", (ad_id,))
-            merged_ads += cur.rowcount
+    # Головне, що треба забрати: кому вже пішла яка картка. Без цього
+    # другий запуск на іншій машині надішле все вдруге.
+    have_sent = {
+        (r["ad_id"], r["chat_id"])
+        for r in conn.execute("SELECT ad_id, chat_id FROM notifications")
+    }
+    for doc in db.notifications.find({}, {"ad_id": 1, "chat_id": 1, "ts": 1}):
+        pair = (doc.get("ad_id"), doc.get("chat_id"))
+        if pair[0] and pair[1] and pair not in have_sent:
+            store.mark_sent(conn, pair[0], pair[1])
+            merged_ads += 1
 
     have = {r["q"] for r in conn.execute("SELECT q FROM geocache")}
     for doc in db.geocache.find():
