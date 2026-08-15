@@ -8,6 +8,7 @@ services:
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
       MONGODB_URI: ${MONGODB_URI:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      RIA_API_KEY: ${RIA_API_KEY:-}
       FLAT_HUNT_DB: /data/flats.db
       TZ: Europe/Kyiv
     volumes:

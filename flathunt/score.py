@@ -27,8 +27,11 @@ def reject_reason(ad, cfg):
         if bad.lower() in text:
             return f"текст: {bad}"
 
+    walk = ad.get("walk_min")
+    if walk is not None and walk > cfg["walk_tiers"]["ok"]:
+        return f"далеко: {walk} хв пішки"
     dist = ad.get("dist_km")
-    if dist is not None and dist > cfg["tiers"]["ok"]:
+    if walk is None and dist is not None and dist > cfg["tiers"]["ok"]:
         return f"далеко: {dist} км"
 
     rooms = ad.get("rooms") or 0
@@ -42,17 +45,64 @@ def reject_reason(ad, cfg):
     if rooms == 1 and any(w in text for w in SOLO_ONLY) and (ad.get("people") or 1) > 1:
         return "тільки для однієї особи"
 
+    # Те, що витягла модель з опису: гуртожиток квартирою не є
+    haystack = f"{text} {(ad.get('restrictions') or '').lower()}"
+    for bad in cfg.get("exclude_llm") or []:
+        if bad.lower() in haystack:
+            return f"опис: {bad}"
+
     return None
 
 
-def tier_of(dist, cfg):
+def real_cost(ad, cfg):
+    """Скільки це насправді коштує на особу щомісяця в перший рік.
+
+    Оголошення «17 500 все включено» і «17 500 + комуналка + комісія»
+    у списку виглядають однаково, хоча різниця відчутна.
+    """
+    price = ad.get("price")
+    if not price:
+        return None
+    total = float(price)
+
+    if (ad.get("utilities") or "") != "входить":
+        table = cfg.get("utilities_estimate") or {}
+        total += float(table.get(ad.get("rooms") or 1, 2000))
+
+    # комісія розкидана на рік
+    commission = ad.get("commission")
+    if commission == "повна":
+        total += price / 12
+    elif commission == "половина":
+        total += price / 24
+    elif commission is None and ad.get("is_business"):
+        total += price / 24      # агенція без явної згадки: припускаємо пів ставки
+
+    return round(total / max(1, ad.get("people") or 1))
+
+
+def tier_of(ad, cfg):
+    """Тір за хвилинами ходьби, а якщо маршруту немає — за прямою лінією."""
+    walk = ad.get("walk_min")
+    if walk is not None:
+        t = cfg["walk_tiers"]
+        if walk <= t["ideal"]:
+            return "ідеал"
+        if walk <= t["good"]:
+            return "добре"
+        if walk <= t["ok"]:
+            return "далекувато"
+        return "поза"
+
+    dist = ad.get("dist_km")
     if dist is None:
         return "невідомо"
-    if dist <= cfg["tiers"]["ideal"]:
+    t = cfg["tiers"]
+    if dist <= t["ideal"]:
         return "ідеал"
-    if dist <= cfg["tiers"]["good"]:
+    if dist <= t["good"]:
         return "добре"
-    if dist <= cfg["tiers"]["ok"]:
+    if dist <= t["ok"]:
         return "далекувато"
     return "поза"
 
@@ -62,15 +112,9 @@ def score(ad, cfg):
     pts = 0
     text = _text(ad)
 
-    dist = ad.get("dist_km")
-    if dist is None:
-        pts += 12 if "центр" in text else 6
-    elif dist <= cfg["tiers"]["ideal"]:
-        pts += 40
-    elif dist <= cfg["tiers"]["good"]:
-        pts += 30
-    else:
-        pts += 15
+    tier = tier_of(ad, cfg)
+    pts += {"ідеал": 40, "добре": 30, "далекувато": 15}.get(
+        tier, 12 if "центр" in text else 6)
 
     # ціна на особу відносно верхньої межі вилки
     search = next((s for s in cfg["searches"] if s["key"] == ad.get("search_key")), None)
@@ -101,8 +145,20 @@ def score(ad, cfg):
     if (ad.get("photos") or 0) >= 5:
         pts += 3
 
-    if ad.get("street_conf") == "вул+буд":
+    if ad.get("street_conf") in ("вул+буд", "модель+буд"):
         pts += 4
+
+    if (ad.get("backup_power") or "") == "є":
+        pts += 4
+    if (ad.get("commission") or "") == "немає":
+        pts += 5
+    if (ad.get("utilities") or "") == "входить":
+        pts += 4
+
+    haystack = f"{text} {(ad.get('restrictions') or '').lower()}"
+    for phrase, penalty in (cfg.get("penalise_llm") or {}).items():
+        if phrase.lower() in haystack:
+            pts -= penalty
 
     return max(0, min(100, pts))
 
@@ -110,7 +166,7 @@ def score(ad, cfg):
 def evaluate(ad, cfg, median_ppm=None):
     """Проставляє rejected / tier / score / ознаки ризику."""
     ad["rejected"] = reject_reason(ad, cfg)
-    ad["tier"] = tier_of(ad.get("dist_km"), cfg)
+    ad["tier"] = tier_of(ad, cfg)
     ad["score"] = 0 if ad["rejected"] else score(ad, cfg)
 
     marks = risk.flags(ad, median_ppm)
@@ -121,6 +177,8 @@ def evaluate(ad, cfg, median_ppm=None):
         ad["score"] = max(0, ad["score"] - 20)
     elif ad["risk_level"] == "середній":
         ad["score"] = max(0, ad["score"] - 8)
+
+    ad["real_cost"] = real_cost(ad, cfg)
 
     if ad.get("lat") and ad.get("lon"):
         ad["map_url"] = f"https://www.google.com/maps/search/?api=1&query={ad['lat']},{ad['lon']}"

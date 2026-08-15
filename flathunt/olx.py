@@ -143,6 +143,7 @@ def normalize(ad, search):
         "created_time": ad.get("createdTime"),
         "refresh_time": ad.get("lastRefreshTime"),
         "photos": len(photos),
+        "photo_url": photos[0] if photos else None,
     }
 
 

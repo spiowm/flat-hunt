@@ -32,14 +32,25 @@ def card(ad, anchor=None):
     mark = TIER_MARK.get(_get(ad, "tier"), "⚪")
 
     where = _get(ad, "street") or _get(ad, "district") or "адреса не вказана"
+    walk = _get(ad, "walk_min")
     dist_km = _get(ad, "dist_km")
-    dist = f"{dist_km} км до Анни" if dist_km is not None else "відстань невідома"
+    if walk:
+        dist = f"{walk} хв пішки до Анни"
+    elif dist_km is not None:
+        dist = f"{dist_km} км до Анни"
+    else:
+        dist = "відстань невідома"
 
     lines = [
         f"{mark} <b>{html.escape(str(where))}</b> — {dist}",
         f"<b>{price:,} ₴</b>".replace(",", " ")
         + (f"  ·  {per_person:,} ₴/особу".replace(",", " ") if people > 1 else ""),
     ]
+
+    # Реальна вартість: з комуналкою й розкиданою на рік комісією
+    real = _get(ad, "real_cost")
+    if real and real != per_person:
+        lines.append(f"💰 <b>насправді {real:,} ₴/особу</b>".replace(",", " ") + " з комуналкою й комісією")
 
     facts = []
     if _get(ad, "rooms"):
@@ -55,7 +66,35 @@ def card(ad, anchor=None):
     if facts:
         lines.append(html.escape(" · ".join(facts)))
 
-    lines.append("👤 <b>власник</b>" if not _get(ad, "is_business") else "🏢 агенція (можлива комісія)")
+    who = "👤 <b>власник</b>" if not _get(ad, "is_business") else "🏢 агенція"
+    commission = _get(ad, "commission")
+    if commission == "немає":
+        who += " · без комісії"
+    elif commission:
+        who += f" · комісія {commission}"
+    lines.append(who)
+
+    extras = []
+    utilities = _get(ad, "utilities")
+    if utilities == "входить":
+        extras.append("комуналка входить")
+    elif utilities == "окремо":
+        extras.append("комуналка окремо")
+    if _get(ad, "backup_power") == "є":
+        extras.append("⚡ резервне живлення")
+    deposit = _get(ad, "deposit")
+    if deposit:
+        extras.append(f"депозит {deposit} міс.")
+    if extras:
+        lines.append(html.escape(" · ".join(extras)))
+
+    restrictions = _get(ad, "restrictions")
+    if restrictions:
+        lines.append(f"⚠️ {html.escape(str(restrictions))}")
+
+    drop = _get(ad, "price_drop")
+    if drop and drop > 0:
+        lines.append(f"📉 <b>ціна впала на {drop:,} ₴</b> — можна торгуватись".replace(",", " "))
 
     level = _get(ad, "risk_level")
     if level:
@@ -84,9 +123,9 @@ def card(ad, anchor=None):
     return "\n".join(lines)
 
 
-def _post(cfg, method, payload):
+def _post(cfg, method, payload, chat_id=None):
     token = cfg["notify"]["telegram_token"]
-    chat_id = cfg["notify"]["telegram_chat_id"]
+    chat_id = chat_id or cfg["notify"].get("telegram_chat_id")
     if not token or not chat_id:
         return False, "telegram не налаштовано"
     payload = {"chat_id": chat_id, **payload}
@@ -95,16 +134,15 @@ def _post(cfg, method, payload):
     return bool(ok), ("" if ok else r.text[:200])
 
 
-def send(cfg, text):
+def send(cfg, text, chat_id=None):
     return _post(cfg, "sendMessage", {
         "text": text, "parse_mode": "HTML", "disable_web_page_preview": False,
-    })
+    }, chat_id)
 
 
-def send_ad(cfg, ad):
+def send_ad(cfg, ad, chat_id=None):
     """Картка + мітка на карті з колом реальної точності."""
-    anchor = cfg.get("anchor")
-    ok, err = send(cfg, card(ad, anchor))
+    ok, err = send(cfg, card(ad, cfg.get("anchor")), chat_id)
     if not ok:
         return ok, err
 
@@ -114,5 +152,5 @@ def send_ad(cfg, ad):
             "latitude": lat,
             "longitude": lon,
             "horizontal_accuracy": ACCURACY.get(_get(ad, "street_conf"), 900.0),
-        })
+        }, chat_id)
     return True, ""

@@ -118,6 +118,51 @@ def district_conflict(conn, query, olx_district):
     return bool(found) and olx_district not in found
 
 
+# Публічний демо-сервер OSRM тримає лише автомобільний профіль: запит
+# на /foot/ мовчки обслуговується машиною, і тривалість виходить утричі
+# заниженою. Відстань по дорогах при цьому адекватна, тож беремо її
+# і рахуємо час самі за нормальною швидкістю ходьби.
+OSRM = "https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}"
+WALK_KMH = 4.5
+
+
+def walk_route(conn, lat, lon, cfg):
+    """Скільки насправді йти пішки. Пряма лінія бреше: біля вокзалу
+    колія перетворює 1 км прямою на добрих 25 хвилин ходу.
+
+    Результат кешується в тій самій таблиці, що й геокодування,
+    під ключем із координатами.
+    """
+    anchor = cfg["anchor"]
+    key = f"walk:{lat:.5f},{lon:.5f}"
+    cached = store.geocache_get(conn, key)
+    if cached is not None:
+        minutes, km, _ = cached
+        return (int(minutes), km) if minutes is not None else None
+
+    url = OSRM.format(lon1=lon, lat1=lat, lon2=anchor["lon"], lat2=anchor["lat"])
+    try:
+        r = requests.get(url, params={"overview": "false"},
+                         headers={"User-Agent": f"flat-hunt/1.0 ({cfg['geo']['contact_email']})"},
+                         timeout=20)
+        r.raise_for_status()
+        data = r.json()
+    except Exception:
+        return None
+
+    routes = data.get("routes") or []
+    if not routes:
+        store.geocache_put(conn, key, None, None, "маршруту немає")
+        conn.commit()
+        return None
+
+    km = round(routes[0]["distance"] / 1000, 2)
+    minutes = round(km / WALK_KMH * 60)
+    store.geocache_put(conn, key, minutes, km, "osrm driving distance @ 4.5 км/год")
+    conn.commit()
+    return minutes, km
+
+
 def locate(conn, ad, cfg):
     """Доповнює оголошення street/lat/lon/dist_km. Змінює ad на місці."""
     name, house, conf = extract_street(ad.get("title"), ad.get("description"))
@@ -148,4 +193,8 @@ def locate(conn, ad, cfg):
     ad["dist_km"] = round(
         haversine(cfg["anchor"]["lat"], cfg["anchor"]["lon"], point[0], point[1]), 2
     )
+
+    walk = walk_route(conn, point[0], point[1], cfg)
+    if walk:
+        ad["walk_min"], ad["walk_km"] = walk
     return ad

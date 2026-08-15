@@ -15,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-from . import geo, notify, olx, score, store, sync
+from . import dimria, geo, llm, notify, olx, photo, score, store, sync
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -50,8 +50,12 @@ def load_config():
     with open(CONFIG, encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
     # Секрети завжди беруться з оточення й перекривають yaml
-    cfg["notify"]["telegram_token"] = os.environ.get("TELEGRAM_TOKEN", cfg["notify"]["telegram_token"])
-    cfg["notify"]["telegram_chat_id"] = os.environ.get("TELEGRAM_CHAT_ID", cfg["notify"]["telegram_chat_id"])
+    cfg["notify"]["telegram_token"] = os.environ.get("TELEGRAM_TOKEN", "")
+    # Запасний одержувач із .env, якщо в config.yaml список порожній
+    fallback = os.environ.get("TELEGRAM_CHAT_ID", "")
+    cfg["notify"]["telegram_chat_id"] = fallback
+    if not cfg["notify"].get("recipients") and fallback:
+        cfg["notify"]["recipients"] = [{"name": "основний", "chat_id": fallback}]
     cfg["llm"] = {
         "gemini_key": os.environ.get("GEMINI_API_KEY", ""),
         # gemini-3.7-flash — найновіша Flash (13.08.2026); у tier 1 це
@@ -81,13 +85,24 @@ def cmd_collect(args):
 
     total_fetched = total_new = total_sent = 0
 
+    batches = []
     for search in cfg["searches"]:
         try:
-            ads = olx.collect(search, cfg)
+            batches.append((search["key"], olx.collect(search, cfg)))
         except Exception as exc:
-            print(f"[{search['key']}] помилка збору: {exc}")
+            print(f"[{search['key']}] OLX не зібрався: {exc}")
             store.log_run(conn, "olx", 0, 0, 0, f"{search['key']}: {exc}")
-            continue
+
+    try:
+        ria = dimria.collect(cfg["searches"], cfg)
+        if ria:
+            batches.append(("dimria", ria))
+            print(f"[dimria] зібрано {len(ria)}")
+    except Exception as exc:
+        print(f"[dimria] не зібралось: {exc}")
+        store.log_run(conn, "dimria", 0, 0, 0, str(exc))
+
+    for label, ads in batches:
 
         ppm = [a["price"] / a["area"] for a in ads if a.get("price") and a.get("area")]
         ppm.sort()
@@ -97,37 +112,54 @@ def cmd_collect(args):
         for ad in ads:
             geo.locate(conn, ad, cfg)
             score.evaluate(ad, cfg, median_ppm)
+            prev = store.record_price(conn, ad["id"], ad.get("price"))
+            if prev:
+                ad["price_prev"] = prev
+                ad["price_drop"] = prev - (ad.get("price") or prev)
             if store.upsert(conn, ad):
                 new_here += 1
         conn.commit()
 
         total_fetched += len(ads)
         total_new += new_here
-        print(f"[{search['key']}] зібрано {len(ads)}, нових {new_here}")
+        if label != "dimria":
+            print(f"[{label}] зібрано {len(ads)}, нових {new_here}")
+
+    # Розбір описів моделлю: вулиця там, де регекс не впорався, плюс
+    # комісія, комуналка й обмеження — усе це живе тільки у вільному тексті
+    if llm.enabled(cfg):
+        done, streets = llm.enrich_pending(conn, cfg, limit=args.llm_limit)
+        if done:
+            print(f"розібрано моделлю {done}, з них знайдено вулиць {streets}")
+            for row in conn.execute(
+                "SELECT * FROM ads WHERE llm_done = 1 AND rejected IS NULL"
+            ).fetchall():
+                ad = dict(row)
+                score.evaluate(ad, cfg)
+                conn.execute("UPDATE ads SET score=?, rejected=?, real_cost=? WHERE id=?",
+                             (ad["score"], ad["rejected"], ad["real_cost"], ad["id"]))
+            conn.commit()
+
+    photo.fill_missing(conn, limit=60)
 
     dups = store.sweep_duplicates(conn)
     conn.commit()
-    if dups:
-        print(f"позначено повторів: {dups}")
+    photo_dups, stolen = photo.group_by_photo(conn)
+    if dups or photo_dups:
+        print(f"позначено повторів: {dups} за адресою, {photo_dups} за фото")
+    if stolen:
+        print(f"підозра на крадені фото: {stolen}")
 
     if args.seed:
-        n = conn.execute("UPDATE ads SET notified = 1 WHERE notified = 0").rowcount
+        chats = [r["chat_id"] for r in recipients(cfg)]
+        n = store.seed_notifications(conn, chats)
         conn.commit()
-        print(f"бекленг позначено як переглянутий: {n} шт. "
-              f"Далі в Telegram піде лише те, що зʼявиться після цього моменту.")
+        print(f"бекленг позначено як переглянутий: {n} позначок на {len(chats)} одержувач(ів). "
+              f"Далі піде лише те, що зʼявиться після цього моменту.")
         return
 
     if not args.quiet:
-        min_score = cfg["notify"]["min_score"]
-        for row in store.pending_notifications(conn, min_score):
-            ok, err = notify.send_ad(cfg, row)
-            if ok:
-                store.mark_notified(conn, row["id"])
-                total_sent += 1
-            else:
-                print(f"не надіслано ({err})")
-                break
-        conn.commit()
+        total_sent = deliver(cfg, conn)
 
     store.log_run(conn, "olx", total_fetched, total_new, total_sent)
     conn.commit()
@@ -142,12 +174,40 @@ def cmd_collect(args):
     print(f"разом: зібрано {total_fetched}, нових {total_new}, надіслано {total_sent}")
 
 
+def recipients(cfg):
+    """Одержувачі з config.yaml. Порожні chat_id ігноруються."""
+    return [r for r in (cfg["notify"].get("recipients") or []) if r.get("chat_id")]
+
+
+def deliver(cfg, conn):
+    """Розсилає кожному його добірку. У кожного свої фільтри."""
+    default_min = cfg["notify"]["min_score"]
+    sent_total = 0
+    for who in recipients(cfg):
+        pending = store.pending_for(conn, who, default_min)
+        if not pending:
+            continue
+        sent = 0
+        for row in pending:
+            ok, err = notify.send_ad(cfg, row, who["chat_id"])
+            if not ok:
+                print(f"[{who['name']}] не надіслано: {err}")
+                break
+            store.mark_sent(conn, row["id"], who["chat_id"])
+            sent += 1
+        conn.commit()
+        sent_total += sent
+        if sent:
+            print(f"[{who['name']}] надіслано {sent}")
+    return sent_total
+
+
 def cmd_report(args):
     cfg = load_config()
     conn = store.connect()
     where = "" if args.all else "WHERE rejected IS NULL AND dup_of IS NULL"
     rows = conn.execute(
-        f"SELECT * FROM ads {where} ORDER BY score DESC, dist_km IS NULL, dist_km LIMIT ?",
+        f"SELECT * FROM ads {where} ORDER BY score DESC, walk_min IS NULL, walk_min LIMIT ?",
         (args.limit,),
     ).fetchall()
 
@@ -155,16 +215,27 @@ def cmd_report(args):
         print("порожньо — спершу запусти: python3 run.py collect --quiet --force")
         return
 
-    print(f"{'бал':>4} {'км':>5} {'ціна':>7} {'/особу':>7} {'к':>1} {'м²':>5}  {'хто':<8} вулиця / заголовок")
-    print("-" * 108)
+    header = (f"{'бал':>4} {'хв':>4} {'ціна':>7} {'реально':>8} {'к':>1} {'м²':>4} "
+              f"{'хто':<7} {'дж':<6} вулиця")
+    print(header)
+    print("-" * len(header))
     for r in rows:
-        per = round((r["price"] or 0) / max(1, r["people"] or 1))
         who = "власник" if not r["is_business"] else "агенція"
-        dist = f"{r['dist_km']:.2f}" if r["dist_km"] is not None else "  ?"
-        where_txt = r["street"] or (r["district"] or "") + " " + (r["title"] or "")[:36]
-        flag = f"  ✗ {r['rejected']}" if r["rejected"] else ""
-        print(f"{r['score']:>4} {dist:>5} {r['price'] or 0:>7} {per:>7} {r['rooms'] or 0:>1} "
-              f"{r['area'] or 0:>5.0f}  {who:<8} {where_txt[:46]}{flag}")
+        walk = f"{r['walk_min']}" if r["walk_min"] else "?"
+        real = r["real_cost"] or round((r["price"] or 0) / max(1, r["people"] or 1))
+        where_txt = r["street"] or ((r["district"] or "") + " " + (r["title"] or ""))[:34]
+        marks = []
+        if r["risk_level"]:
+            marks.append("⚠" + r["risk_level"][:3])
+        if r["commission"] == "немає":
+            marks.append("безком")
+        if r["price_drop"]:
+            marks.append("↓ціна")
+        if r["rejected"]:
+            marks.append("✗ " + r["rejected"])
+        print(f"{r['score']:>4} {walk:>4} {r['price'] or 0:>7} {real:>8} {r['rooms'] or 0:>1} "
+              f"{r['area'] or 0:>4.0f} {who:<7} {(r['source'] or '')[:6]:<6} "
+              f"{where_txt[:32]:<32} {' '.join(marks)}")
     print(f"\nвсього рядків: {len(rows)}")
 
 
@@ -217,8 +288,9 @@ def cmd_test(args):
     if row is None:
         print("база порожня")
         return
-    ok, err = notify.send_ad(cfg, row)
-    print("надіслано" if ok else f"не вдалось: {err}")
+    for who in recipients(cfg):
+        ok, err = notify.send_ad(cfg, row, who["chat_id"])
+        print(f"[{who['name']}] " + ("надіслано" if ok else f"не вдалось: {err}"))
 
 
 def cmd_watch(args):
@@ -229,7 +301,7 @@ def cmd_watch(args):
     while True:
         started = time.time()
         try:
-            cmd_collect(argparse.Namespace(quiet=False, force=False, seed=False))
+            cmd_collect(argparse.Namespace(quiet=False, force=False, seed=False, llm_limit=40))
         except Exception as exc:  # цикл не має падати через одну помилку мережі
             print(f"прохід впав: {exc}", flush=True)
         sleep_for = max(60, args.interval - (time.time() - started))
@@ -276,6 +348,7 @@ def main():
     c.add_argument("--quiet", action="store_true", help="не надсилати в Telegram")
     c.add_argument("--force", action="store_true", help="ігнорувати робоче вікно")
     c.add_argument("--seed", action="store_true", help="позначити наявне як переглянуте, нічого не слати")
+    c.add_argument("--llm-limit", type=int, default=40, help="скільки описів розбирати моделлю за прохід")
     c.set_defaults(func=cmd_collect)
 
     r = sub.add_parser("report")

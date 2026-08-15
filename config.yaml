@@ -4,27 +4,35 @@ anchor:
   lon: 24.0149
   name: "церква св. Анни"
 
-# Тіри відстані (км, пряма лінія)
+# Тіри відстані. Основні — хвилини ходьби, бо саме вони важать.
+# Пряма лінія лишається запасним варіантом, коли маршрут не порахувався.
+walk_tiers:
+  ideal: 20
+  good: 35
+  ok: 55         # далі — відсів
 tiers:
   ideal: 1.5
   good: 2.5
-  ok: 4.0        # далі — відсів
+  ok: 4.0
 
 # Пошукові конфігурації. price_max задано так, щоб ціна НА ОСОБУ
 # лишалась у межах ~11 тис. грн: 1к/1 особа, 2к/2 особи, 3к/3 особи.
 searches:
   - key: r1
     rooms: odnokomnatnye
+    rooms_count: 1
     people: 1
     price_min: 9000
     price_max: 14000
   - key: r2
     rooms: dvuhkomnatnye
+    rooms_count: 2
     people: 2
     price_min: 15000
     price_max: 23000
   - key: r3
     rooms: trehkomnatnye
+    rooms_count: 3
     people: 3
     price_min: 22000
     price_max: 33000
@@ -53,6 +61,23 @@ exclude_text:
 # Для 2-3 кімнат: жити по кімнатах, тож прохідні не годяться
 require_separate_layout_from_rooms: 2
 
+# Знайдено моделлю в описах — те, чого немає в жодному структурованому полі
+exclude_llm:
+  - гуртожит        # це не квартира
+  - общежит
+
+# Сильно псує варіант, але не дискваліфікує
+penalise_llm:
+  пічне опалення: 15
+  ванна в кухні: 10
+  без гарячої води: 12
+
+# Орієнтовна комуналка на місяць, якщо не входить у ціну (середнє по році)
+utilities_estimate:
+  1: 1800
+  2: 2400
+  3: 3000
+
 collector:
   user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
   pages_per_search: 2
@@ -65,10 +90,28 @@ geo:
   min_interval: 1.2                          # секунд між запитами до Nominatim
 
 notify:
-  # Заповнити після створення бота через @BotFather
-  telegram_token: ""
-  telegram_chat_id: ""
-  # Мінімальний бал, щоб узагалі надсилати
+  # Токен береться з .env (TELEGRAM_TOKEN), тут його немає навмисно
   min_score: 45
-  # Приватні власники — окремий пріоритет
-  private_always: true
+
+  # Кому і що слати. Кожен має власні фільтри: брату, якому потрібна
+  # тільки трикімнатна, однушки не приходять взагалі.
+  # chat_id дізнатись: написати боту, тоді `flat-hunt chatid`.
+  recipients:
+    - name: Олексій
+      chat_id: "1073576903"
+      searches: [r1, r2, r3]
+      min_score: 45
+      max_walk_min: 35
+
+    # Розкоментувати й вписати chat_id, коли брати напишуть боту
+    # - name: Брат
+    #   chat_id: ""
+    #   searches: [r2, r3]      # тільки спільне житло
+    #   min_score: 55
+    #   max_walk_min: 30
+    #
+    # - name: Другий брат
+    #   chat_id: ""
+    #   searches: [r3]          # тільки трикімнатні
+    #   min_score: 55
+    #   max_walk_min: 30

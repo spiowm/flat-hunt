@@ -65,6 +65,21 @@ CREATE TABLE IF NOT EXISTS geocache (
     ts      TEXT
 );
 
+CREATE TABLE IF NOT EXISTS notifications (
+    ad_id   TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    ts      TEXT,
+    PRIMARY KEY (ad_id, chat_id)
+);
+
+CREATE TABLE IF NOT EXISTS price_history (
+    ad_id TEXT NOT NULL,
+    price INTEGER,
+    ts    TEXT,
+    PRIMARY KEY (ad_id, price, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_price_ad ON price_history(ad_id, ts);
+
 CREATE TABLE IF NOT EXISTS runs (
     ts        TEXT,
     source    TEXT,
@@ -103,33 +118,44 @@ def _migrate(conn):
     for column, decl in (
         ("user_created", "TEXT"), ("user_verified", "TEXT"),
         ("risk_flags", "TEXT"), ("risk_level", "TEXT"), ("map_url", "TEXT"),
-        ("source_group", "TEXT"),
+        ("source_group", "TEXT"), ("walk_min", "INTEGER"), ("walk_km", "REAL"),
+        ("photo_hash", "TEXT"), ("photo_url", "TEXT"), ("commission", "TEXT"),
+        ("utilities", "TEXT"), ("deposit", "TEXT"), ("min_term", "TEXT"),
+        ("restrictions", "TEXT"), ("backup_power", "TEXT"), ("real_cost", "INTEGER"),
+        ("llm_done", "INTEGER"), ("price_prev", "INTEGER"), ("price_drop", "INTEGER"),
     ):
         if column not in have:
             conn.execute(f"ALTER TABLE ads ADD COLUMN {column} {decl}")
     conn.commit()
 
 
+def columns(conn):
+    return {r["name"] for r in conn.execute("PRAGMA table_info(ads)")}
+
+
 def upsert(conn, ad):
-    """Повертає True, якщо оголошення бачимо вперше."""
-    cur = conn.execute("SELECT id FROM ads WHERE id = ?", (ad["id"],))
-    is_new = cur.fetchone() is None
-    cols = ", ".join(FIELDS)
-    marks = ", ".join("?" for _ in FIELDS)
-    values = [ad.get(f) for f in FIELDS]
+    """Оновлює лише ті колонки, які реально прийшли в ad.
+
+    Це важливо: збагачення від моделі, позначки дублів і час ходьби
+    рахуються окремими проходами й не приходять зі збирача. Якби
+    оновлювався весь набір колонок, кожен наступний прохід їх затирав би.
+    """
+    known = columns(conn)
+    present = [k for k in ad if k in known and k != "id"]
+
+    is_new = conn.execute("SELECT 1 FROM ads WHERE id = ?", (ad["id"],)).fetchone() is None
     if is_new:
+        cols = ["id"] + present
+        marks = ", ".join("?" for _ in cols)
         conn.execute(
-            f"INSERT INTO ads ({cols}, first_seen, last_seen) VALUES ({marks}, ?, ?)",
-            values + [now(), now()],
+            f"INSERT INTO ads ({', '.join(cols)}, first_seen, last_seen) VALUES ({marks}, ?, ?)",
+            [ad["id"]] + [ad[k] for k in present] + [now(), now()],
         )
     else:
-        # dup_of проставляється окремо і не приходить зі збирача —
-        # інакше кожен наступний прохід затирав би позначки дублів
-        upd = [f for f in FIELDS if f not in ("id", "dup_of")]
-        sets = ", ".join(f"{f} = ?" for f in upd)
+        sets = ", ".join(f"{k} = ?" for k in present)
         conn.execute(
             f"UPDATE ads SET {sets}, last_seen = ? WHERE id = ?",
-            [ad.get(f) for f in upd] + [now(), ad["id"]],
+            [ad[k] for k in present] + [now(), ad["id"]],
         )
     return is_new
 
@@ -221,17 +247,86 @@ def geocache_put(conn, q, lat, lon, display):
     )
 
 
-def pending_notifications(conn, min_score):
-    return conn.execute(
-        """SELECT * FROM ads
-           WHERE notified = 0 AND rejected IS NULL AND dup_of IS NULL AND score >= ?
-           ORDER BY score DESC""",
-        (min_score,),
+def pending_for(conn, recipient, default_min_score):
+    """Що ще не пішло саме цьому одержувачу, з урахуванням його фільтрів."""
+    keys = recipient.get("searches") or []
+    min_score = recipient.get("min_score", default_min_score)
+    params = [recipient["chat_id"], min_score]
+
+    sql = """SELECT a.* FROM ads a
+             WHERE a.rejected IS NULL AND a.dup_of IS NULL
+               AND NOT EXISTS (SELECT 1 FROM notifications n
+                               WHERE n.ad_id = a.id AND n.chat_id = ?)
+               AND a.score >= ?"""
+    if keys:
+        sql += " AND a.search_key IN (%s)" % ",".join("?" for _ in keys)
+        params += list(keys)
+
+    walk_cap = recipient.get("max_walk_min")
+    if walk_cap:
+        # невідомий час ходьби не відсіюємо — краще зайва картка, ніж проґавлений варіант
+        sql += " AND (a.walk_min IS NULL OR a.walk_min <= ?)"
+        params.append(walk_cap)
+
+    sql += " ORDER BY a.score DESC"
+    return conn.execute(sql, params).fetchall()
+
+
+def mark_sent(conn, ad_id, chat_id):
+    conn.execute(
+        "INSERT OR IGNORE INTO notifications (ad_id, chat_id, ts) VALUES (?, ?, ?)",
+        (ad_id, chat_id, now()),
+    )
+
+
+def seed_notifications(conn, chat_ids):
+    """Позначає весь наявний бекленг як надісланий усім одержувачам."""
+    ids = [r["id"] for r in conn.execute("SELECT id FROM ads")]
+    for ad_id in ids:
+        for chat_id in chat_ids:
+            mark_sent(conn, ad_id, chat_id)
+    return len(ids) * max(1, len(chat_ids))
+
+
+def record_price(conn, ad_id, price):
+    """Знімок ціни. Повертає попередню ціну, якщо вона змінилась."""
+    if price is None:
+        return None
+    prev = conn.execute(
+        "SELECT price FROM price_history WHERE ad_id = ? ORDER BY ts DESC LIMIT 1", (ad_id,)
+    ).fetchone()
+    if prev is None:
+        conn.execute("INSERT OR IGNORE INTO price_history (ad_id, price, ts) VALUES (?, ?, ?)",
+                     (ad_id, price, now()))
+        return None
+    if prev["price"] != price:
+        conn.execute("INSERT OR IGNORE INTO price_history (ad_id, price, ts) VALUES (?, ?, ?)",
+                     (ad_id, price, now()))
+        return prev["price"]
+    return None
+
+
+def market_signals(conn, ad_id, first_seen):
+    """Сигнали з історії: падіння ціни й скільки висить."""
+    from datetime import datetime, timezone
+    rows = conn.execute(
+        "SELECT price, ts FROM price_history WHERE ad_id = ? ORDER BY ts", (ad_id,)
     ).fetchall()
-
-
-def mark_notified(conn, ad_id):
-    conn.execute("UPDATE ads SET notified = 1 WHERE id = ?", (ad_id,))
+    drop = None
+    if len(rows) > 1 and rows[0]["price"] and rows[-1]["price"]:
+        diff = rows[0]["price"] - rows[-1]["price"]
+        if diff > 0:
+            drop = diff
+    days = None
+    if first_seen:
+        try:
+            seen = datetime.fromisoformat(first_seen)
+            if seen.tzinfo is None:
+                seen = seen.replace(tzinfo=timezone.utc)
+            days = (datetime.now(timezone.utc) - seen).days
+        except ValueError:
+            pass
+    return drop, days
 
 
 def log_run(conn, source, fetched, new_ads, notified, note=""):
