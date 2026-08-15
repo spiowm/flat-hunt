@@ -1,6 +1,8 @@
 """Жорсткі відсіви та оцінка оголошення (0–100)."""
 import re
 
+from . import risk
+
 GOOD_RENOVATION = ("євроремонт", "дизайнерськ", "авторськ", "після ремонту", "новий ремонт")
 OK_RENOVATION = ("житловий стан", "косметичний")
 WALKTHROUGH = ("прохідн", "суміжн", "смежн")
@@ -105,9 +107,21 @@ def score(ad, cfg):
     return max(0, min(100, pts))
 
 
-def evaluate(ad, cfg):
-    """Проставляє rejected / tier / score."""
+def evaluate(ad, cfg, median_ppm=None):
+    """Проставляє rejected / tier / score / ознаки ризику."""
     ad["rejected"] = reject_reason(ad, cfg)
     ad["tier"] = tier_of(ad.get("dist_km"), cfg)
     ad["score"] = 0 if ad["rejected"] else score(ad, cfg)
+
+    marks = risk.flags(ad, median_ppm)
+    ad["risk_flags"] = "; ".join(marks) or None
+    ad["risk_level"] = risk.level(marks)
+    # Підозріле не відсіюємо — рішення за людиною, але вниз списку опускаємо
+    if ad["risk_level"] == "високий":
+        ad["score"] = max(0, ad["score"] - 20)
+    elif ad["risk_level"] == "середній":
+        ad["score"] = max(0, ad["score"] - 8)
+
+    if ad.get("lat") and ad.get("lon"):
+        ad["map_url"] = f"https://www.google.com/maps/search/?api=1&query={ad['lat']},{ad['lon']}"
     return ad

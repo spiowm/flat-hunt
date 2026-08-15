@@ -1,5 +1,6 @@
 """SQLite-сховище оголошень і кеш геокодування."""
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +38,11 @@ CREATE TABLE IF NOT EXISTS ads (
     is_business   INTEGER,
     seller        TEXT,
     user_id       TEXT,
+    user_created  TEXT,
+    user_verified TEXT,
+    risk_flags    TEXT,
+    risk_level    TEXT,
+    map_url       TEXT,
     created_time  TEXT,
     refresh_time  TEXT,
     photos        INTEGER,
@@ -73,7 +79,8 @@ FIELDS = [
     "id", "source", "ext_id", "url", "title", "description", "search_key", "people",
     "price", "rooms", "area", "floor", "total_floors", "layout", "renovation",
     "furniture", "house_type", "city", "district", "street", "street_conf", "lat",
-    "lon", "dist_km", "is_business", "seller", "user_id", "created_time",
+    "lon", "dist_km", "is_business", "seller", "user_id", "user_created",
+    "user_verified", "risk_flags", "risk_level", "map_url", "created_time",
     "refresh_time", "photos", "score", "tier", "rejected", "dup_of",
 ]
 
@@ -86,7 +93,21 @@ def connect(path=DB_PATH):
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn):
+    """Доліває колонки, яких бракує у вже наявній базі."""
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(ads)")}
+    for column, decl in (
+        ("user_created", "TEXT"), ("user_verified", "TEXT"),
+        ("risk_flags", "TEXT"), ("risk_level", "TEXT"), ("map_url", "TEXT"),
+        ("source_group", "TEXT"),
+    ):
+        if column not in have:
+            conn.execute(f"ALTER TABLE ads ADD COLUMN {column} {decl}")
+    conn.commit()
 
 
 def upsert(conn, ad):
@@ -129,26 +150,60 @@ def find_duplicate(conn, ad):
     return row["id"] if row else None
 
 
-def sweep_duplicates(conn):
-    """Позначає повтори по всій базі: та сама ціна, площа, поверх і вулиця.
+def _norm_street(street):
+    """«вул. Генерала Чупринки, 59» і «Чупринки 59» мають збігтися."""
+    if not street:
+        return None
+    s = street.lower().replace("’", "'").replace("`", "'")
+    for junk in ("вулиця ", "вул. ", "вул ", "проспект ", "просп. ", "пр. ", "площа ", "пл. "):
+        s = s.replace(junk, "")
+    for title in ("генерала ", "святого ", "св. ", "митрополита ", "академіка "):
+        s = s.replace(title, "")
+    return re.sub(r"[^a-zа-яіїєґ0-9]", "", s)
 
-    Залишає найстаріший запис як оригінал — саме він зазвичай від власника,
-    а пізніші клони від агенцій.
+
+def _fingerprint(row):
+    """Ключ об'єкта, стійкий до джерела й дрібних розбіжностей у ціні."""
+    return (
+        round((row["price"] or 0) / 500),      # крок 500 грн: агенції округлюють по-різному
+        round(row["area"] or 0),
+        row["floor"],
+        _norm_street(row["street"]),
+    )
+
+
+def sweep_duplicates(conn):
+    """Позначає повтори по всій базі, зокрема між різними джерелами.
+
+    Канонічним лишається оголошення від власника — саме воно без комісії.
+    Якщо власника серед клонів немає, беремо найстаріше.
     """
     rows = conn.execute(
-        """SELECT id, price, area, floor, street, first_seen FROM ads
-           WHERE street IS NOT NULL AND area IS NOT NULL
-           ORDER BY first_seen"""
+        """SELECT id, price, area, floor, street, first_seen, is_business, source FROM ads
+           WHERE street IS NOT NULL AND area IS NOT NULL"""
     ).fetchall()
-    seen, marked = {}, 0
+
+    groups = {}
     for r in rows:
-        key = (r["price"], round(r["area"]), r["floor"], r["street"])
-        if key in seen:
-            conn.execute("UPDATE ads SET dup_of = ? WHERE id = ?", (seen[key], r["id"]))
+        key = _fingerprint(r)
+        if key[3]:
+            groups.setdefault(key, []).append(r)
+
+    marked = 0
+    for members in groups.values():
+        # власник попереду, далі за давністю появи
+        members.sort(key=lambda r: (r["is_business"] or 0, r["first_seen"] or ""))
+        canonical = members[0]
+        conn.execute("UPDATE ads SET dup_of = NULL WHERE id = ?", (canonical["id"],))
+        sources = ",".join(sorted({m["source"] for m in members}))
+        for other in members[1:]:
+            conn.execute(
+                "UPDATE ads SET dup_of = ?, source_group = ? WHERE id = ?",
+                (canonical["id"], sources, other["id"]),
+            )
             marked += 1
-        else:
-            seen[key] = r["id"]
-            conn.execute("UPDATE ads SET dup_of = NULL WHERE id = ?", (r["id"],))
+        if len(members) > 1:
+            conn.execute("UPDATE ads SET source_group = ? WHERE id = ?", (sources, canonical["id"]))
     return marked
 
 

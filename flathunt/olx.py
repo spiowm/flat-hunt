@@ -137,6 +137,9 @@ def normalize(ad, search):
         "is_business": 1 if ad.get("isBusiness") else 0,
         "seller": contact.get("name") or user.get("name"),
         "user_id": str(user.get("id")) if user.get("id") else None,
+        # Вік акаунта — найдешевший сигнал шахрайства, лежить прямо тут
+        "user_created": user.get("created"),
+        "user_verified": (user.get("verification") or {}).get("status"),
         "created_time": ad.get("createdTime"),
         "refresh_time": ad.get("lastRefreshTime"),
         "photos": len(photos),

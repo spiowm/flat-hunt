@@ -1,24 +1,31 @@
-FROM python:3.13-slim
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    PATH="/app/.venv/bin:$PATH" \
     TZ=Europe/Kyiv \
-    FLAT_HUNT_DB=/data/flats.db
+    FLAT_HUNT_DB=/data/flats.db \
+    FLAT_HUNT_CONFIG=/app/config.yaml
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir requests==2.32.3 PyYAML==6.0.2 curl_cffi==0.7.4
+# Спершу лише маніфести — шар із залежностями кешується між збірками
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-install-project --no-dev
 
 COPY flathunt/ ./flathunt/
-COPY run.py config.yaml ./
+COPY config.yaml ./
+RUN uv sync --locked --no-dev
 
 RUN mkdir -p /data
 VOLUME ["/data"]
 
-# Перевірка живості: база доступна і збирач хоч раз відпрацював
-HEALTHCHECK --interval=5m --timeout=20s --start-period=2m \
-  CMD python3 -c "import sqlite3,os,sys; \
+HEALTHCHECK --interval=5m --timeout=20s --start-period=3m \
+  CMD python -c "import sqlite3,os,sys; \
       c=sqlite3.connect(os.environ['FLAT_HUNT_DB']); \
       sys.exit(0 if c.execute('select count(*) from runs').fetchone()[0] else 1)"
 
-CMD ["python3", "run.py", "watch", "--interval", "600"]
+CMD ["flat-hunt", "watch", "--interval", "600"]
