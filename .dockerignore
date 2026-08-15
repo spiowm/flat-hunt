@@ -1,0 +1,6 @@
+.env
+flats.db
+__pycache__/
+*.pyc
+.git/
+README.md

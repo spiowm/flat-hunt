@@ -1,0 +1,74 @@
+# Точка відліку: церква святої Анни, вул. Т. Шевченка, Львів
+anchor:
+  lat: 49.8431
+  lon: 24.0149
+  name: "церква св. Анни"
+
+# Тіри відстані (км, пряма лінія)
+tiers:
+  ideal: 1.5
+  good: 2.5
+  ok: 4.0        # далі — відсів
+
+# Пошукові конфігурації. price_max задано так, щоб ціна НА ОСОБУ
+# лишалась у межах ~11 тис. грн: 1к/1 особа, 2к/2 особи, 3к/3 особи.
+searches:
+  - key: r1
+    rooms: odnokomnatnye
+    people: 1
+    price_min: 9000
+    price_max: 14000
+  - key: r2
+    rooms: dvuhkomnatnye
+    people: 2
+    price_min: 15000
+    price_max: 23000
+  - key: r3
+    rooms: trehkomnatnye
+    people: 3
+    price_min: 22000
+    price_max: 33000
+
+# Жорсткі відсіви за районом/місцевістю (підрядок у назві району або тексті)
+exclude_areas:
+  - Сихівський
+  - Сихів
+  - Левандівка
+  - Левандівці
+  - Рясне
+  - Збоїща
+  - Брюховичі
+  - Зимна Вода
+  - Сокільники
+  - Малехів
+  - Винники
+
+# Жорсткі відсіви за текстом
+exclude_text:
+  - подобово
+  - погодинно
+  - подобова
+  - посуточно
+
+# Для 2-3 кімнат: жити по кімнатах, тож прохідні не годяться
+require_separate_layout_from_rooms: 2
+
+collector:
+  user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+  pages_per_search: 2
+  delay_between_requests: 3.0
+  active_hours: [8, 22]      # локальний час, поза цим вікном збирач спить
+
+geo:
+  nominatim_url: "https://nominatim.openstreetmap.org/search"
+  contact_email: "oleksiitatar@gmail.com"   # Nominatim просить контакт у User-Agent
+  min_interval: 1.2                          # секунд між запитами до Nominatim
+
+notify:
+  # Заповнити після створення бота через @BotFather
+  telegram_token: ""
+  telegram_chat_id: ""
+  # Мінімальний бал, щоб узагалі надсилати
+  min_score: 45
+  # Приватні власники — окремий пріоритет
+  private_always: true

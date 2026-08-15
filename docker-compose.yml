@@ -1,0 +1,20 @@
+services:
+  flat-hunt:
+    build: .
+    restart: unless-stopped
+    environment:
+      # У Coolify задаються в UI, у git не потрапляють
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      FLAT_HUNT_DB: /data/flats.db
+      TZ: Europe/Kyiv
+    volumes:
+      - flat-hunt-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  flat-hunt-data:
