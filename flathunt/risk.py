@@ -65,6 +65,43 @@ def flags(ad, median_price_per_m2=None):
     return out
 
 
+def corpus_flags(conn):
+    """Ознаки, які видно лише на всій вибірці, а не в окремому оголошенні.
+
+    Головна з них: свіжий акаунт із кількома оголошеннями. Власник, який
+    щойно зареєструвався, виставляє одну квартиру. Кілька за день з
+    акаунта віком у добу — це або новий посередник, або схема, і в обох
+    випадках варто дивитись уважніше.
+    """
+    rows = conn.execute(
+        """SELECT user_id, count(*) n, min(user_created) created
+           FROM ads WHERE user_id IS NOT NULL AND rejected IS NULL
+           GROUP BY user_id HAVING n > 1"""
+    ).fetchall()
+
+    marked = 0
+    for row in rows:
+        age = _age_days(row["created"])
+        if age is None or age >= YOUNG_ACCOUNT_DAYS:
+            continue
+        mark = f"акаунту {age} дн. і вже {row['n']} оголошення"
+        for ad in conn.execute(
+            "SELECT id, risk_flags FROM ads WHERE user_id = ? AND rejected IS NULL",
+            (row["user_id"],),
+        ).fetchall():
+            if mark in (ad["risk_flags"] or ""):
+                continue
+            flags = [f for f in (ad["risk_flags"] or "").split("; ") if f and "акаунту" not in f]
+            flags.append(mark)
+            conn.execute(
+                "UPDATE ads SET risk_flags = ?, risk_level = ?, score = max(0, score - 12) WHERE id = ?",
+                ("; ".join(flags), "середній" if age > 3 else "високий", ad["id"]),
+            )
+            marked += 1
+    conn.commit()
+    return marked
+
+
 def level(flag_list):
     """Загальний рівень: чим більше збігів, тим підозріліше."""
     if not flag_list:

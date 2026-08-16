@@ -167,6 +167,11 @@ def cmd_collect(args):
     if rescored:
         print(f"переоцінено після збагачення: {rescored}")
 
+    from . import risk
+    suspicious = risk.corpus_flags(conn)
+    if suspicious:
+        print(f"позначено як свіжий акаунт із кількома оголошеннями: {suspicious}")
+
     dups = store.sweep_duplicates(conn)
     conn.commit()
     photo_dups, stolen = photo.group_by_photo(conn)
