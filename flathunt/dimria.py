@@ -19,6 +19,8 @@ import time
 
 from curl_cffi import requests as http
 
+from . import net
+
 CATALOG_URL = "https://dom.ria.com/uk/arenda-kvartir/lvov/"
 API = "https://developers.ria.com/dom"
 STATE_KEY = "window.__INITIAL_STATE__="
@@ -60,7 +62,8 @@ def _extract_state(html):
 
 def scrape_catalog(session=None):
     session = session or _session()
-    state = _extract_state(session.get(CATALOG_URL).text)
+    html = net.with_retry(lambda: session.get(CATALOG_URL).text)
+    state = _extract_state(html)
     if not state:
         return []
     return state.get("catalog", {}).get("realtyForCatalog", []) or []
@@ -71,9 +74,12 @@ def scrape_catalog(session=None):
 # --------------------------------------------------------------------------
 
 def _api(session, path, key, **params):
-    r = session.get(f"{API}/{path}", params={"api_key": key, "lang_id": 4, **params})
-    r.raise_for_status()
-    return r.json()
+    def once():
+        r = session.get(f"{API}/{path}", params={"api_key": key, "lang_id": 4, **params})
+        r.raise_for_status()
+        return r.json()
+
+    return net.with_retry(once)
 
 
 def resolve_city(session, key, state_name="Львівська", city_name="Львів"):

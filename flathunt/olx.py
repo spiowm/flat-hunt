@@ -22,6 +22,8 @@ except ImportError:  # локально можна й без нього
 
     IMPERSONATE = {}
 
+from . import net
+
 BASE = "https://www.olx.ua/uk/nedvizhimost/kvartiry/dolgosrochnaya-arenda-kvartir/lvov/"
 STATE_RE = re.compile(r'__PRERENDERED_STATE__\s*=\s*("(?:\\.|[^"\\])*")')
 
@@ -42,17 +44,24 @@ def build_url(rooms, price_min, price_max, page=1):
 
 
 def fetch_state(url, user_agent, timeout=30):
-    r = http.get(
-        url,
-        headers={
-            "User-Agent": user_agent,
-            "Accept-Language": "uk-UA,uk;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
-        timeout=timeout,
-        **IMPERSONATE,
+    def once():
+        r = http.get(
+            url,
+            headers={
+                "User-Agent": user_agent,
+                "Accept-Language": "uk-UA,uk;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+            timeout=timeout,
+            **IMPERSONATE,
+        )
+        r.raise_for_status()
+        return r
+
+    r = net.with_retry(
+        once,
+        on_retry=lambda n, d, e: print(f"  спроба {n} не вдалась ({str(e)[:60]}), повтор через {d} с", flush=True),
     )
-    r.raise_for_status()
     m = STATE_RE.search(r.text)
     if not m:
         raise RuntimeError(f"не знайдено __PRERENDERED_STATE__ у {url}")
