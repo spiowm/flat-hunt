@@ -22,7 +22,7 @@ searches:
     rooms: odnokomnatnye
     rooms_count: 1
     people: 1
-    price_min: 9000
+    price_min: 7000
     price_max: 14000
   - key: r2
     rooms: dvuhkomnatnye
@@ -71,6 +71,10 @@ penalise_llm:
   пічне опалення: 15
   ванна в кухні: 10
   без гарячої води: 12
+
+# Оголошення, яке підіймають у топ понад рік, — це не житло,
+# а приманка для збору контактів
+max_days_listed: 365
 
 # Орієнтовна комуналка на місяць, якщо не входить у ціну (середнє по році)
 utilities_estimate:

@@ -53,6 +53,10 @@ def reject_reason(ad, cfg):
     if any(w in text for w in FAMILY_ONLY):
         return "тільки сім'ям з дітьми"
 
+    cap = cfg.get("max_days_listed")
+    if cap and (ad.get("days_listed") or 0) > cap:
+        return f"висить {ad['days_listed']} днів — приманка, а не житло"
+
     # Те, що витягла модель з опису: гуртожиток квартирою не є
     haystack = f"{text} {(ad.get('restrictions') or '').lower()}"
     for bad in cfg.get("exclude_llm") or []:

@@ -298,11 +298,13 @@ def cmd_watch(args):
     """Нескінченний цикл для контейнера: збирає з інтервалом і шле нове."""
     import time
 
-    print(f"watch: інтервал {args.interval} с, робоче вікно з config.yaml", flush=True)
+    window = "цілодобово" if args.force else "робоче вікно з config.yaml"
+    print(f"watch: інтервал {args.interval} с, {window}", flush=True)
     while True:
         started = time.time()
         try:
-            cmd_collect(argparse.Namespace(quiet=False, force=False, seed=False, llm_limit=40))
+            cmd_collect(argparse.Namespace(
+                quiet=args.quiet, force=args.force, seed=False, llm_limit=args.llm_limit))
         except Exception as exc:  # цикл не має падати через одну помилку мережі
             print(f"прохід впав: {exc}", flush=True)
         sleep_for = max(60, args.interval - (time.time() - started))
@@ -379,6 +381,9 @@ def main():
 
     w = sub.add_parser("watch", help="нескінченний цикл (для контейнера)")
     w.add_argument("--interval", type=int, default=600, help="секунд між проходами")
+    w.add_argument("--force", action="store_true", help="ігнорувати робоче вікно")
+    w.add_argument("--quiet", action="store_true", help="збирати, але не слати")
+    w.add_argument("--llm-limit", type=int, default=40)
     w.set_defaults(func=cmd_watch)
 
     args = ap.parse_args()
