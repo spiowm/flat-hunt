@@ -73,6 +73,30 @@ def fetch_state(url, user_agent, timeout=30):
     return json.loads(payload)
 
 
+def total_count(state):
+    """Скільки оголошень OLX обіцяє за цим запитом.
+
+    Потрібне, бо розмір сторінки в них плаває: 39, 40, 41 у різних
+    проходах. Зупинятись за «сторінка неповна, отже остання» не можна —
+    так одного разу загубилось двадцять три однокімнатні з шістдесяти двох.
+    """
+    found = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key in ("totalElements", "total_elements", "totalCount"):
+                if isinstance(node.get(key), int):
+                    found.append(node[key])
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(state)
+    return max(found) if found else None
+
+
 def extract_ads(state):
     """Дістає масив оголошень із стану, де б він не лежав."""
     found = []
@@ -161,18 +185,28 @@ def collect(search, cfg):
     ua = cfg["collector"]["user_agent"]
     delay = cfg["collector"]["delay_between_requests"]
     out, seen = [], set()
+    expected = None
     for page in range(1, cfg["collector"]["pages_per_search"] + 1):
         url = build_url(search["rooms"], search["price_min"], search["price_max"], page)
         state = fetch_state(url, ua)
         ads = extract_ads(state)
         if not ads:
             break
+        if expected is None:
+            expected = total_count(state)
+
+        before = len(seen)
         for ad in ads:
             if ad.get("id") in seen:
                 continue
             seen.add(ad.get("id"))
             out.append(normalize(ad, search))
-        if len(ads) < 40:
+
+        # Зупиняємось, коли зібрали все обіцяне або сторінка не дала
+        # нічого нового. Розмір сторінки для цього не годиться — він плаває.
+        if expected is not None and len(seen) >= expected:
+            break
+        if len(seen) == before:
             break
         time.sleep(delay)
     return out
