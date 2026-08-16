@@ -145,6 +145,30 @@ def cmd_collect(args):
                              (ad["score"], ad["rejected"], ad["real_cost"], ad["id"]))
             conn.commit()
 
+    # Адреси, які знайшла модель, ще не геокодовані: гео працює під час
+    # збору, а модель розбирає описи після нього. Без цього кроку
+    # оголошення з адресою від моделі назавжди лишалось без хвилин ходьби.
+    pending_geo = conn.execute(
+        """SELECT * FROM ads WHERE street IS NOT NULL AND lat IS NULL
+           AND rejected IS NULL LIMIT 40"""
+    ).fetchall()
+    located = 0
+    for row in pending_geo:
+        ad = dict(row)
+        geo.locate(conn, ad, cfg)
+        if ad.get("lat"):
+            score.evaluate(ad, cfg)
+            conn.execute(
+                """UPDATE ads SET lat=?, lon=?, dist_km=?, walk_min=?, walk_km=?,
+                       score=?, rejected=?, tier=? WHERE id=?""",
+                (ad["lat"], ad["lon"], ad.get("dist_km"), ad.get("walk_min"),
+                 ad.get("walk_km"), ad["score"], ad["rejected"], ad["tier"], row["id"]),
+            )
+            located += 1
+    if located:
+        conn.commit()
+        print(f"геокодовано адрес від моделі: {located}")
+
     photo.fill_missing(conn, limit=60)
     store.refresh_market_signals(conn)
 

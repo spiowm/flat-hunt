@@ -176,11 +176,33 @@ def walk_route(conn, lat, lon, cfg):
     return minutes, km
 
 
+def _split_stored(street):
+    """Розбирає збережену адресу «Менцинського, 3» назад на назву й номер."""
+    if not street:
+        return None, None
+    parts = [p.strip() for p in street.split(",")]
+    name = parts[0]
+    house = parts[1] if len(parts) > 1 and re.match(r"^\d", parts[1]) else None
+    return (name or None), house
+
+
 def locate(conn, ad, cfg):
     """Доповнює оголошення street/lat/lon/dist_km. Змінює ad на місці."""
     name, house, conf, kind = extract_street(ad.get("title"), ad.get("description"))
-    ad["street"] = f"{name}, {house}" if (name and house) else name
-    ad["street_conf"] = ("вул+буд" if house else conf) if name else None
+
+    if name:
+        ad["street"] = f"{name}, {house}" if house else name
+        ad["street_conf"] = ("вул+буд" if house else conf)
+    else:
+        # Регекс не впорався — але адресу міг знайти розбір опису моделлю,
+        # і вона вже лежить у полі street. Саме заради таких випадків
+        # модель і потрібна, тож ігнорувати її результат тут не можна.
+        name, house = _split_stored(ad.get("street"))
+        if not name:
+            ad["street"] = None
+            ad["street_conf"] = None
+            return ad
+        kind = "вулиця"
 
     if not name:
         return ad
