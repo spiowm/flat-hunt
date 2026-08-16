@@ -238,8 +238,14 @@ def pending_for(conn, recipient, default_min_score):
     min_score = recipient.get("min_score", default_min_score)
     params = [recipient["chat_id"], min_score]
 
+    # Високий ризик у розсилку не потрапляє взагалі. Раніше він лише
+    # знижував бал, і оголошення з високим ризиком могло перелізти поріг
+    # — так у чат пішли дві квартири з групи в чотири від акаунта,
+    # створеного того ж дня. Поріг означає «варте твого часу», а таке
+    # за визначенням не варте. У report вони лишаються видимими.
     sql = """SELECT a.* FROM ads a
              WHERE a.rejected IS NULL AND a.dup_of IS NULL
+               AND ifnull(a.risk_level, '') != 'високий'
                AND NOT EXISTS (SELECT 1 FROM notifications n
                                WHERE n.ad_id = a.id AND n.chat_id = ?)
                AND a.score >= ?"""
