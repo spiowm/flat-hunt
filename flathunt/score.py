@@ -19,6 +19,14 @@ FAMILY_ONLY = ("тільки сімейні пари", "лише сімейні 
                "лише сімейним", "сімейні пари з дітьми", "тільки для сім'ї",
                "лише для сім'ї", "тільки сім'ям", "для сімейної пари")
 
+# «розглядають пару 1-особу» — двоє братів це не пара і не одна особа.
+# Формулювань багато, і кожне наступне я знаходив уже після того, як
+# воно з'їдало дзвінок.
+COUPLE_OR_SOLO = ("пару 1-особу", "пару або 1 особу", "пара або одна особа",
+                  "пару чи одну особу", "для пари або однієї особи",
+                  "розглядають пару", "тільки пара", "лише пара",
+                  "пара без дітей", "для пари")
+
 
 def _text(ad):
     return f"{ad.get('title') or ''} {ad.get('description') or ''}".lower()
@@ -38,8 +46,12 @@ def reject_reason(ad, cfg):
             return f"текст: {bad}"
 
     walk = ad.get("walk_min")
-    if walk is not None:
-        exact = ad.get("street_conf") in ("вул+буд", "модель+буд")
+    conf = ad.get("street_conf")
+    # Точка за центром району нічого не доводить: Личаківський тягнеться
+    # і на десять хвилин від Анни, і на годину. Така оцінка лише довідкова
+    # й на відсів впливати не може.
+    if walk is not None and conf != "район":
+        exact = conf in ("вул+буд", "модель+буд")
         cap = cfg["walk_tiers"]["ok"] if exact else cfg["walk_tiers"].get("ok_street_only", 90)
         if walk > cap:
             return f"далеко: {walk} хв пішки"
@@ -60,6 +72,16 @@ def reject_reason(ad, cfg):
 
     if any(w in text for w in FAMILY_ONLY):
         return "тільки сім'ям з дітьми"
+
+    if (ad.get("people") or 1) > 1 and any(w in text for w in COUPLE_OR_SOLO):
+        return "тільки парі або одній особі"
+
+    age_cfg = cfg.get("account_age") or {}
+    floor_days = age_cfg.get("reject_below_days")
+    if floor_days:
+        age = risk._age_days(ad.get("user_created"))
+        if age is not None and age < floor_days:
+            return f"акаунту продавця {age} дн. — надто свіжий"
 
     cap = cfg.get("max_days_listed")
     if cap and (ad.get("days_listed") or 0) > cap:
@@ -132,7 +154,11 @@ def score(ad, cfg):
     pts = 0
     text = _text(ad)
 
-    tier = tier_of(ad, cfg)
+    if ad.get("street_conf") == "район":
+        # бал як за невідому адресу, а не як за точну далеку
+        tier = "невідомо"
+    else:
+        tier = tier_of(ad, cfg)
     pts += {"ідеал": 40, "добре": 30, "далекувато": 15}.get(
         tier, 12 if "центр" in text else 6)
 

@@ -256,7 +256,8 @@ def pending_for(conn, recipient, default_min_score):
     walk_cap = recipient.get("max_walk_min")
     if walk_cap:
         # невідомий час ходьби не відсіюємо — краще зайва картка, ніж проґавлений варіант
-        sql += " AND (a.walk_min IS NULL OR a.walk_min <= ?)"
+        # приблизна точка за районом рахується як «невідомо»
+        sql += " AND (a.walk_min IS NULL OR ifnull(a.street_conf,'') = 'район' OR a.walk_min <= ?)"
         params.append(walk_cap)
 
     sql += " ORDER BY a.score DESC"

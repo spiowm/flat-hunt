@@ -15,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-from . import dimria, geo, llm, notify, olx, photo, score, store, sync
+from . import commands, dimria, geo, llm, notify, olx, photo, score, store, sync
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -352,8 +352,16 @@ def cmd_watch(args):
     """Нескінченний цикл для контейнера: збирає з інтервалом і шле нове."""
     import time
 
+    import threading
+
     window = "цілодобово" if args.force else "робоче вікно з config.yaml"
     print(f"watch: інтервал {args.interval} с, {window}", flush=True)
+
+    cfg = load_config()
+    if recipients(cfg):
+        threading.Thread(target=commands.listen_forever, args=(cfg, recipients(cfg)),
+                         daemon=True).start()
+        print("кнопки: слухаю натискання окремим потоком", flush=True)
     while True:
         started = time.time()
         # Без мітки часу неможливо зрозуміти, чому оголошення дійшло

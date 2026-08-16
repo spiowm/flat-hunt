@@ -6,8 +6,8 @@
 import re
 from datetime import datetime, timezone
 
-YOUNG_ACCOUNT_DAYS = 90        # «акаунту лише кілька місяців»
-VERY_YOUNG_ACCOUNT_DAYS = 21
+YOUNG_ACCOUNT_DAYS = 120       # «акаунту лише кілька місяців»
+VERY_YOUNG_ACCOUNT_DAYS = 30
 
 # Класика оренди: ціна суттєво нижча за ринок + гроші наперед.
 # Слова про бронювання самі по собі нічого не означають — «вільна,
@@ -43,7 +43,9 @@ def flags(ad, median_price_per_m2=None):
     age = _age_days(ad.get("user_created"))
     if age is not None:
         if age < VERY_YOUNG_ACCOUNT_DAYS:
-            out.append(f"акаунту {age} дн.")
+            # Акаунт молодший за місяць — сам по собі важкий сигнал.
+            # Справжній власник зазвичай має акаунт, старший за оголошення.
+            out.append(f"акаунту лише {age} дн.")
         elif age < YOUNG_ACCOUNT_DAYS:
             out.append(f"акаунту {age // 30 or 1} міс.")
 
@@ -112,7 +114,9 @@ def level(flag_list):
     if not flag_list:
         return None
     heavy = {"просить передоплату", "не показує особисто", "ціна нижча за ринок на 40%+"}
-    if len(set(flag_list) & heavy) >= 2 or len(flag_list) >= 3:
+    # Свіжий акаунт більше не «низький»: саме так виглядає збір контактів
+    fresh = any(f.startswith("акаунту лише") or "і вже" in f for f in flag_list)
+    if fresh or len(set(flag_list) & heavy) >= 2 or len(flag_list) >= 3:
         return "високий"
     if set(flag_list) & heavy:
         return "середній"

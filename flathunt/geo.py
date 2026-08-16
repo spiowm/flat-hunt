@@ -66,6 +66,30 @@ def extract_street(title, description):
     return None, None, None, "вулиця"
 
 
+# В оголошеннях вулицю пишуть у місцевому відмінку: «на Садовій»,
+# «по Замарстинівській». Геокодер таких форм не знає й повертає порожньо,
+# тож квартира лишається без відстані. Відмінюємо назад у називний.
+DECLENSION = (
+    ("ській", "ська"), ("цькій", "цька"), ("зькій", "зька"),
+    ("чній", "чна"), ("шній", "шня"), ("жній", "жня"),
+    ("ній", "на"), ("вій", "ва"), ("бій", "ба"), ("дій", "да"),
+    ("тій", "та"), ("лій", "ла"), ("рій", "ра"), ("мій", "ма"),
+    ("ій", "а"), ("ої", "а"), ("ою", "а"),
+)
+
+
+def undecline(name):
+    """«Садовій» -> «Садова». Повертає None, якщо форма й так називна."""
+    if not name:
+        return None
+    head, _, last = name.rpartition(" ")
+    for suffix, replacement in DECLENSION:
+        if last.lower().endswith(suffix) and len(last) > len(suffix) + 1:
+            fixed = last[: -len(suffix)] + replacement
+            return f"{head} {fixed}".strip()
+    return None
+
+
 def geocode(conn, name, house, cfg, kind="вулиця"):
     """Геокодує вулицю через Nominatim із кешем у БД."""
     query = f"{kind} {name}"
@@ -176,6 +200,20 @@ def walk_route(conn, lat, lon, cfg):
     return minutes, km
 
 
+def _district_fallback(conn, ad, cfg):
+    """Остання спроба: прив'язати хоча б до центру району."""
+    point = district_point(conn, ad.get("district"), cfg)
+    if point is None:
+        return ad
+    ad["lat"], ad["lon"] = point
+    ad["dist_km"] = round(haversine(cfg["anchor"]["lat"], cfg["anchor"]["lon"], *point), 2)
+    ad["street_conf"] = "район"
+    walk = walk_route(conn, point[0], point[1], cfg)
+    if walk:
+        ad["walk_min"], ad["walk_km"] = walk
+    return ad
+
+
 def _split_stored(street):
     """Розбирає збережену адресу «Менцинського, 3» назад на назву й номер."""
     if not street:
@@ -184,6 +222,41 @@ def _split_stored(street):
     name = parts[0]
     house = parts[1] if len(parts) > 1 and re.match(r"^\d", parts[1]) else None
     return (name or None), house
+
+
+def district_point(conn, district, cfg):
+    """Центр району як груба прив'язка, коли вулиці не знайшли.
+
+    Краще показати «приблизно два кілометри, район Галицький», ніж
+    порожнє місце: людина принаймні розуміє, у який бік дивитись.
+    """
+    if not district:
+        return None
+    query = f"{district} район, Львів, Україна"
+    cached = store.geocache_get(conn, query)
+    if cached is not None:
+        return (cached[0], cached[1]) if cached[0] is not None else None
+
+    wait = cfg["geo"]["min_interval"] - (time.time() - _last_request[0])
+    if wait > 0:
+        time.sleep(wait)
+    _last_request[0] = time.time()
+    try:
+        r = requests.get(cfg["geo"]["nominatim_url"],
+                         params={"format": "json", "limit": 1, "q": query},
+                         headers={"User-Agent": f"flat-hunt/1.0 ({cfg['geo']['contact_email']})"},
+                         timeout=20)
+        data = r.json() if r.ok else []
+    except Exception:
+        return None
+    if not data:
+        store.geocache_put(conn, query, None, None, None)
+        conn.commit()
+        return None
+    lat, lon = float(data[0]["lat"]), float(data[0]["lon"])
+    store.geocache_put(conn, query, lat, lon, data[0].get("display_name"))
+    conn.commit()
+    return (lat, lon)
 
 
 def locate(conn, ad, cfg):
@@ -201,13 +274,24 @@ def locate(conn, ad, cfg):
         if not name:
             ad["street"] = None
             ad["street_conf"] = None
-            return ad
+            return _district_fallback(conn, ad, cfg)
         kind = "вулиця"
 
     if not name:
         return ad
 
     point = geocode(conn, name, house, cfg, kind)
+
+    # Не знайшлось — можливо, назва стоїть у місцевому відмінку
+    if point is None:
+        alt = undecline(name)
+        if alt:
+            point = geocode(conn, alt, house, cfg, kind)
+            if point is None and house:
+                point = geocode(conn, alt, None, cfg, kind)
+            if point is not None:
+                name = alt
+                ad["street"] = f"{alt}, {house}" if house else alt
 
     # Перехресна перевірка району потрібна не лише для номера будинку:
     # довга вулиця з однойменним двійником на іншому кінці міста дає
@@ -230,7 +314,7 @@ def locate(conn, ad, cfg):
         if point and ad["street_conf"] != "сумнівно":
             ad["street_conf"] = "вул"
     if point is None:
-        return ad
+        return _district_fallback(conn, ad, cfg)
 
     ad["lat"], ad["lon"] = point
     ad["dist_km"] = round(

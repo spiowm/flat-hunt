@@ -28,19 +28,13 @@ searches:
     rooms_count: 1
     people: 1
     price_min: 7000
-    price_max: 14000
+    price_max: 12000
   - key: r2
     rooms: dvuhkomnatnye
     rooms_count: 2
     people: 2
-    price_min: 15000
-    price_max: 23000
-  - key: r3
-    rooms: trehkomnatnye
-    rooms_count: 3
-    people: 3
-    price_min: 22000
-    price_max: 33000
+    price_min: 13000
+    price_max: 20000
 
 # Жорсткі відсіви за районом/місцевістю (підрядок у назві району або тексті)
 exclude_areas:
@@ -80,6 +74,14 @@ penalise_llm:
 # Оголошення, яке підіймають у топ понад рік, — це не житло,
 # а приманка для збору контактів
 max_days_listed: 365
+
+# Вік акаунта продавця. Свіжий акаунт — найдешевший і найнадійніший
+# сигнал схеми зі збором контактів: справжній власник зазвичай має
+# акаунт, старший за оголошення.
+account_age:
+  reject_below_days: 3      # молодше — не показуємо взагалі
+  high_risk_below_days: 30
+  warn_below_days: 120
 
 # Орієнтовна комуналка на місяць, якщо не входить у ціну (середнє по році)
 utilities_estimate:

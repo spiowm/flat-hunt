@@ -1,9 +1,9 @@
-"""Надсилання карток у Telegram.
+"""Картки у Telegram.
 
-Крім тексту йде нативна мітка на карті. Точність кола відображає те,
-наскільки ми впевнені в адресі: якщо відомий номер будинку — коло
-маленьке, якщо тільки вулиця — велике, і по ньому одразу видно,
-що точку ще треба уточнити в продавця.
+Розмітка — HTML, а не MarkdownV2. Обидві дають однаковий вигляд, але
+MarkdownV2 вимагає екранувати півтора десятка символів, і будь-яка тире
+чи дужка в назві вулиці ламає повідомлення цілком. У HTML екранувати
+треба три символи, тож ризик зіпсувати картку через чужий текст нижчий.
 """
 import html
 
@@ -11,9 +11,13 @@ import requests
 
 TIER_MARK = {"ідеал": "🟢", "добре": "🟡", "далекувато": "🟠", "невідомо": "⚪"}
 RISK_MARK = {"високий": "🔴", "середній": "🟠", "низький": "🟡"}
+ROOMS_WORD = {1: "1-кімнатна", 2: "2-кімнатна", 3: "3-кімнатна"}
 
-# Радіус кола на карті, метрів: наскільки насправді відома точка
-ACCURACY = {"вул+буд": 80.0, "вул": 600.0, "сумнівно": 1400.0}
+KEYBOARD = {
+    "keyboard": [[{"text": "🔎 Однокімнатні"}, {"text": "🔎 Двокімнатні"}]],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
 
 
 def _get(ad, key, default=None):
@@ -25,107 +29,129 @@ def _get(ad, key, default=None):
     return default if value is None else value
 
 
+def _money(value):
+    return f"{int(value):,}".replace(",", " ")
+
+
+def _map_link(ad):
+    """Посилання на карту є завжди, коли є хоч якась точка."""
+    lat, lon = _get(ad, "lat"), _get(ad, "lon")
+    if lat and lon:
+        return f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+    return None
+
+
 def card(ad, anchor=None):
+    rooms = _get(ad, "rooms")
+    street = _get(ad, "street") or _get(ad, "district") or "адреса не вказана"
     price = _get(ad, "price", 0)
     people = _get(ad, "people", 1) or 1
-    per_person = round(price / people)
-    mark = TIER_MARK.get(_get(ad, "tier"), "⚪")
 
-    where = _get(ad, "street") or _get(ad, "district") or "адреса не вказана"
-    walk = _get(ad, "walk_min")
-    dist_km = _get(ad, "dist_km")
-    if walk:
-        dist = f"{walk} хв пішки до Анни"
-    elif dist_km is not None:
-        dist = f"{dist_km} км до Анни"
-    else:
-        dist = "відстань невідома"
+    head = ROOMS_WORD.get(rooms, f"{rooms}-кімнатна" if rooms else "квартира")
+    lines = [f"🏠 <b>{head}</b> · {html.escape(str(street))}", ""]
 
-    lines = [
-        f"{mark} <b>{html.escape(str(where))}</b> — {dist}",
-        f"<b>{price:,} ₴</b>".replace(",", " ")
-        + (f"  ·  {per_person:,} ₴/особу".replace(",", " ") if people > 1 else ""),
-    ]
-
-    # Реальна вартість: з комуналкою й розкиданою на рік комісією
-    real = _get(ad, "real_cost")
-    if real and real != per_person:
-        lines.append(f"💰 <b>насправді {real:,} ₴/особу</b>".replace(",", " ") + " з комуналкою й комісією")
+    money = f"<b>{_money(price)} ₴</b>"
+    if people > 1:
+        money += f"   ·   {_money(round(price / people))} ₴ з кожного"
+    lines.append(money)
 
     facts = []
-    if _get(ad, "rooms"):
-        facts.append(f"{_get(ad, 'rooms')}-кімн.")
     if _get(ad, "area"):
         facts.append(f"{_get(ad, 'area'):g} м²")
     if _get(ad, "floor") and _get(ad, "total_floors"):
         facts.append(f"{_get(ad, 'floor')}/{_get(ad, 'total_floors')} поверх")
-    if _get(ad, "layout"):
-        facts.append(str(_get(ad, "layout")).lower())
     if _get(ad, "renovation"):
         facts.append(str(_get(ad, "renovation")).lower())
     if facts:
         lines.append(html.escape(" · ".join(facts)))
+    lines.append("")
 
-    who = "👤 <b>власник</b>" if not _get(ad, "is_business") else "🏢 агенція"
+    # Відстань і карта — одним рядком, без окремого повідомлення з міткою
+    walk = _get(ad, "walk_min")
+    dist = _get(ad, "dist_km")
+    mark = TIER_MARK.get(_get(ad, "tier"), "⚪")
+    if _get(ad, "street_conf") == "район":
+        where = f"⚪ приблизно <b>{dist} км</b> до Анни — адреси немає, точка за центром району"
+    elif walk:
+        where = f"{mark} <b>{walk} хв</b> пішки до Анни"
+    elif dist is not None:
+        where = f"{mark} близько <b>{dist} км</b> до Анни"
+    else:
+        where = "⚪ відстань невідома"
+    link = _map_link(ad)
+    if link:
+        where += f'   ·   <a href="{link}">на карті</a>'
+    lines.append(where)
+
+    conf = _get(ad, "street_conf")
+    if conf in ("вул", "модель"):
+        lines.append("<i>номер будинку не вказано — точка приблизна</i>")
+    elif conf == "сумнівно":
+        lines.append("<i>геокодер розійшовся з районом OLX — адресу треба уточнити</i>")
+
+    who = "👤 <b>Власник</b>" if not _get(ad, "is_business") else "🏢 Агенція"
     commission = _get(ad, "commission")
     if commission == "немає":
-        who += " · без комісії"
+        who += "   ·   без комісії"
     elif commission:
-        who += f" · комісія {commission}"
+        who += f"   ·   комісія {commission}"
     lines.append(who)
 
     extras = []
-    utilities = _get(ad, "utilities")
-    if utilities == "входить":
+    if _get(ad, "utilities") == "входить":
         extras.append("комуналка входить")
-    elif utilities == "окремо":
-        extras.append("комуналка окремо")
     if _get(ad, "backup_power") == "є":
         extras.append("⚡ резервне живлення")
-    deposit = _get(ad, "deposit")
-    if deposit:
-        extras.append(f"депозит {deposit} міс.")
+    if _get(ad, "deposit"):
+        extras.append(f"депозит {_get(ad, 'deposit')} міс.")
     if extras:
         lines.append(html.escape(" · ".join(extras)))
 
-    restrictions = _get(ad, "restrictions")
-    if restrictions:
-        lines.append(f"⚠️ {html.escape(str(restrictions))}")
-
+    warns = []
+    if _get(ad, "restrictions"):
+        warns.append(str(_get(ad, "restrictions")))
+    days = _get(ad, "days_listed")
+    if days and days >= 30:
+        warns.append(f"висить {days} днів")
     drop = _get(ad, "price_drop")
     if drop and drop > 0:
-        lines.append(f"📉 <b>ціна впала на {drop:,} ₴</b> — можна торгуватись".replace(",", " "))
-
-    days = _get(ad, "days_listed")
-    if days and days >= 14:
-        lines.append(f"🕰 висить {days} дн. — або переоцінене, або є вада")
-
+        warns.append(f"ціна впала на {_money(drop)} ₴")
     level = _get(ad, "risk_level")
     if level:
-        flags = _get(ad, "risk_flags", "")
-        lines.append(f"{RISK_MARK.get(level, '🟡')} <b>ризик {level}:</b> {html.escape(str(flags))}")
+        warns.append(f"ризик {level}: {_get(ad, 'risk_flags', '')}")
+    if warns:
+        lines.append("")
+        lines.append("<blockquote>" + html.escape(" · ".join(warns)) + "</blockquote>")
 
-    conf = _get(ad, "street_conf")
-    if conf == "вул":
-        lines.append("<i>номер будинку не вказано — точка приблизна, спитай адресу</i>")
-    elif conf == "сумнівно":
-        lines.append("<i>геокодер і OLX не зійшлись у районі — адресу треба уточнити</i>")
-
-    lines.append(f"⭐ {_get(ad, 'score', 0)}/100")
-
-    # Мітка на карті йде окремим повідомленням через sendLocation, тож
-    # посилання «подивитись на карті» тут було б третім способом показати
-    # те саме. Лишаємо тільки маршрут — він єдиний дає нову інформацію.
-    links = [f'<a href="{html.escape(str(_get(ad, "url", "")))}">Оголошення</a>']
-    lat, lon = _get(ad, "lat"), _get(ad, "lon")
-    if lat and lon and anchor:
-        links.append(
-            f'<a href="https://www.google.com/maps/dir/?api=1&origin={lat},{lon}'
-            f'&destination={anchor["lat"]},{anchor["lon"]}&travelmode=walking">Маршрут пішки</a>'
-        )
-    lines.append(" · ".join(links))
-
+    lines.append("")
+    lines.append(f'⭐ {_get(ad, "score", 0)}/100   ·   '
+                 f'<a href="{html.escape(str(_get(ad, "url", "")))}">відкрити оголошення</a>')
     return "\n".join(lines)
+
+
+def digest(rows, title):
+    """Компактний список для кнопок: одне оголошення — два рядки."""
+    if not rows:
+        return f"<b>{title}</b>\n\nЗараз нічого немає під фільтрами."
+    out = [f"<b>{title}</b>", ""]
+    for i, r in enumerate(rows, 1):
+        street = _get(r, "street") or _get(r, "district") or "адреса не вказана"
+        walk = _get(r, "walk_min")
+        where = f"{walk} хв" if walk else "? хв"
+        tags = []
+        if not _get(r, "is_business"):
+            tags.append("власник")
+        if _get(r, "commission") == "немає":
+            tags.append("без комісії")
+        if _get(r, "risk_level"):
+            tags.append(f"⚠{_get(r, 'risk_level')}")
+        out.append(
+            f'{i}. <b>{_money(_get(r, "price", 0))} ₴</b> · {_get(r, "area", 0):g} м² · {where}\n'
+            f'    <a href="{html.escape(str(_get(r, "url", "")))}">{html.escape(str(street))}</a>'
+            + (f' — {html.escape(" · ".join(tags))}' if tags else "")
+            + f'  ⭐{_get(r, "score", 0)}'
+        )
+    return "\n".join(out)
 
 
 def _post(cfg, method, payload, chat_id=None):
@@ -133,29 +159,18 @@ def _post(cfg, method, payload, chat_id=None):
     chat_id = chat_id or cfg["notify"].get("telegram_chat_id")
     if not token or not chat_id:
         return False, "telegram не налаштовано"
-    payload = {"chat_id": chat_id, **payload}
-    r = requests.post(f"https://api.telegram.org/bot{token}/{method}", json=payload, timeout=20)
+    r = requests.post(f"https://api.telegram.org/bot{token}/{method}",
+                      json={"chat_id": chat_id, **payload}, timeout=20)
     ok = r.ok and r.json().get("ok")
     return bool(ok), ("" if ok else r.text[:200])
 
 
-def send(cfg, text, chat_id=None):
-    return _post(cfg, "sendMessage", {
-        "text": text, "parse_mode": "HTML", "disable_web_page_preview": False,
-    }, chat_id)
+def send(cfg, text, chat_id=None, keyboard=False):
+    payload = {"text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    if keyboard:
+        payload["reply_markup"] = KEYBOARD
+    return _post(cfg, "sendMessage", payload, chat_id)
 
 
 def send_ad(cfg, ad, chat_id=None):
-    """Картка + мітка на карті з колом реальної точності."""
-    ok, err = send(cfg, card(ad, cfg.get("anchor")), chat_id)
-    if not ok:
-        return ok, err
-
-    lat, lon = _get(ad, "lat"), _get(ad, "lon")
-    if lat and lon:
-        _post(cfg, "sendLocation", {
-            "latitude": lat,
-            "longitude": lon,
-            "horizontal_accuracy": ACCURACY.get(_get(ad, "street_conf"), 900.0),
-        }, chat_id)
-    return True, ""
+    return send(cfg, card(ad, cfg.get("anchor")), chat_id, keyboard=True)
