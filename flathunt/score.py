@@ -74,9 +74,10 @@ def reject_reason(ad, cfg):
 
     rooms = ad.get("rooms") or 0
     if rooms >= cfg["require_separate_layout_from_rooms"]:
-        layout = (ad.get("layout") or "").lower()
-        if any(w in layout for w in WALKTHROUGH) or any(w in text for w in WALKTHROUGH):
-            return "прохідні кімнати"
+        # Прохідна кімната більше не дискваліфікує. Вона незручна для
+        # життя по окремих кімнатах, але це привід подивитись уважніше,
+        # а не викинути: через цей відсів у топ не потрапила квартира
+        # за двадцять одну хвилину від Анни, а таких там одиниці.
         if any(w in text for w in SOLO_ONLY):
             return "тільки для однієї особи"
 
@@ -217,6 +218,11 @@ def score(ad, cfg):
     if (ad.get("rooms") or 0) >= 2 and any(w in text for w in STUDIO):
         pts -= 12
 
+    layout = (ad.get("layout") or "").lower()
+    if (ad.get("rooms") or 0) >= 2 and (any(w in layout for w in WALKTHROUGH)
+                                        or any(w in text for w in WALKTHROUGH)):
+        pts -= 20
+
     # Довго висить — ринок його вже подивився й не взяв
     days = ad.get("days_listed") or 0
     if days >= 30:
@@ -239,6 +245,13 @@ def evaluate(ad, cfg, median_ppm=None):
     ad["rejected"] = reject_reason(ad, cfg)
     ad["tier"] = tier_of(ad, cfg)
     ad["score"] = 0 if ad["rejected"] else score(ad, cfg)
+
+    layout_text = f"{_text(ad)} {(ad.get('layout') or '').lower()}"
+    if (ad.get("rooms") or 0) >= 2 and any(w in layout_text for w in WALKTHROUGH):
+        note = "прохідна кімната — по окремих кімнатах жити не вийде"
+        existing = ad.get("restrictions")
+        if note not in (existing or ""):
+            ad["restrictions"] = "; ".join(filter(None, [existing, note]))
 
     if (ad.get("rooms") or 0) >= 2 and any(w in _text(ad) for w in STUDIO):
         note = "студія — окремих кімнат може не бути"
