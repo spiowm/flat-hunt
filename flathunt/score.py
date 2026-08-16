@@ -38,8 +38,11 @@ def reject_reason(ad, cfg):
             return f"текст: {bad}"
 
     walk = ad.get("walk_min")
-    if walk is not None and walk > cfg["walk_tiers"]["ok"]:
-        return f"далеко: {walk} хв пішки"
+    if walk is not None:
+        exact = ad.get("street_conf") in ("вул+буд", "модель+буд")
+        cap = cfg["walk_tiers"]["ok"] if exact else cfg["walk_tiers"].get("ok_street_only", 90)
+        if walk > cap:
+            return f"далеко: {walk} хв пішки"
     dist = ad.get("dist_km")
     if walk is None and dist is not None and dist > cfg["tiers"]["ok"]:
         return f"далеко: {dist} км"

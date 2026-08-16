@@ -14,9 +14,22 @@ from . import store
 
 # «вул. Городоцька», «по вулиці Зерова», «просп. Свободи», «пл. Ринок»
 STREET_RE = re.compile(
-    r"(?:вул(?:иц[іяею]|\.)?|просп(?:ект|\.)?|пр\.|площ[аі]|пл\.)\s*\.?\s*"
-    r"([А-ЯІЇЄҐ][А-ЯІЇЄҐа-яіїєґ'’\-]+(?:\s+[А-ЯІЇЄҐ][А-ЯІЇЄҐа-яіїєґ'’.\-]+)?)"
+    r"(?P<kind>вул(?:иц[іяею]|\.)?|просп(?:ект|\.)?|пр\.|площ[аі]|пл\.)\s*\.?\s*"
+    r"(?P<name>[А-ЯІЇЄҐ][А-ЯІЇЄҐа-яіїєґ'’\-]+(?:\s+[А-ЯІЇЄҐ][А-ЯІЇЄҐа-яіїєґ'’.\-]+)?)"
 )
+
+# «пр. Шевченка» — це проспект у центрі, а «вул. Шевченка» тягнеться
+# до Рясного за годину ходьби. Тип конче треба зберігати: без нього
+# центральна квартира відсіювалась як така, що за сто шість хвилин.
+KIND = {"просп": "проспект", "пр.": "проспект", "площ": "площа", "пл.": "площа"}
+
+
+def _kind_of(raw):
+    raw = raw.lower().rstrip(".")
+    for prefix, name in KIND.items():
+        if raw.startswith(prefix.rstrip(".")):
+            return name
+    return "вулиця"
 # номер будинку одразу після назви — тоді точка набагато точніша
 HOUSE_RE = re.compile(r"\s*,?\s*(\d{1,3}[А-ЯA-Zа-яa-z]?)\b")
 
@@ -42,20 +55,20 @@ def in_lviv(lat, lon):
 
 
 def extract_street(title, description):
-    """Повертає (назва, номер_будинку|None, впевненість)."""
+    """Повертає (назва, номер_будинку|None, впевненість, тип)."""
     text = f"{title} . {description or ''}"
     m = STREET_RE.search(text)
     if m:
-        name = m.group(1).strip(" .,")
+        name = m.group("name").strip(" .,")
         tail = text[m.end():m.end() + 12]
         h = HOUSE_RE.match(tail)
-        return name, (h.group(1) if h else None), "вул"
-    return None, None, None
+        return name, (h.group(1) if h else None), "вул", _kind_of(m.group("kind"))
+    return None, None, None, "вулиця"
 
 
-def geocode(conn, name, house, cfg):
+def geocode(conn, name, house, cfg, kind="вулиця"):
     """Геокодує вулицю через Nominatim із кешем у БД."""
-    query = f"вулиця {name}"
+    query = f"{kind} {name}"
     if house:
         query += f", {house}"
     query += ", Львів, Україна"
@@ -165,25 +178,33 @@ def walk_route(conn, lat, lon, cfg):
 
 def locate(conn, ad, cfg):
     """Доповнює оголошення street/lat/lon/dist_km. Змінює ad на місці."""
-    name, house, conf = extract_street(ad.get("title"), ad.get("description"))
+    name, house, conf, kind = extract_street(ad.get("title"), ad.get("description"))
     ad["street"] = f"{name}, {house}" if (name and house) else name
     ad["street_conf"] = ("вул+буд" if house else conf) if name else None
 
     if not name:
         return ad
 
-    point = geocode(conn, name, house, cfg)
+    point = geocode(conn, name, house, cfg, kind)
 
-    # Якщо геокодер сів у інший район, ніж каже OLX — це промах по номеру
-    # будинку на довгій вулиці. Відкочуємось на вулицю без номера.
-    if point is not None and house:
-        q = f"вулиця {name}, {house}, Львів, Україна"
-        if district_conflict(conn, q, ad.get("district")):
+    # Перехресна перевірка району потрібна не лише для номера будинку:
+    # довга вулиця з однойменним двійником на іншому кінці міста дає
+    # такий самий промах, «Шевченка» без номера знаходилась у Рясному.
+    #
+    # Але сама по собі розбіжність району нічого не доводить: межі в
+    # OpenStreetMap і в OLX не збігаються, і центральні вулиці на межі
+    # дають хибне спрацювання. Перша версія цієї перевірки знеструмила
+    # Рапапорту з її пʼятьма хвилинами ходьби. Тому розбіжність важить
+    # лише разом із великою відстанню — тоді це справді інша вулиця.
+    q = f"{kind} {name}" + (f", {house}" if house else "") + ", Львів, Україна"
+    if point is not None and district_conflict(conn, q, ad.get("district")):
+        far = haversine(cfg["anchor"]["lat"], cfg["anchor"]["lon"], point[0], point[1]) > 3.0
+        if far:
             ad["street_conf"] = "сумнівно"
-            point = geocode(conn, name, None, cfg)
+            point = geocode(conn, name, None, cfg, kind) if house else None
 
     if point is None and house:
-        point = geocode(conn, name, None, cfg)
+        point = geocode(conn, name, None, cfg, kind)
         if point and ad["street_conf"] != "сумнівно":
             ad["street_conf"] = "вул"
     if point is None:
