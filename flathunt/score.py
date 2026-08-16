@@ -6,6 +6,11 @@ from . import risk
 GOOD_RENOVATION = ("євроремонт", "дизайнерськ", "авторськ", "після ремонту", "новий ремонт")
 OK_RENOVATION = ("житловий стан", "косметичний")
 WALKTHROUGH = ("прохідн", "суміжн", "смежн")
+# Студія — це відкрите планування без окремих кімнат. Для спільної
+# оренди, де кожен має свою кімнату, це майже завжди мимо. Але термін
+# уживають вільно («квартира-студія» часто означає просто кухню-вітальню),
+# тому не відсіюємо, а помітно знижуємо бал і пишемо в картку.
+STUDIO = ("студія", "студіо", "-студія", "студийн", "відкрите планування")
 SOLO_ONLY = ("для однієї особи", "для 1 особи", "для одної особи", "тільки для дівчин",
              "тільки дівчатам", "для дівчини", "лише для дівчат")
 # Троє братів — не сім'я з дітьми. Такі оголошення відпадають одразу,
@@ -167,6 +172,9 @@ def score(ad, cfg):
     if (ad.get("utilities") or "") == "входить":
         pts += 4
 
+    if (ad.get("rooms") or 0) >= 2 and any(w in text for w in STUDIO):
+        pts -= 12
+
     # Довго висить — ринок його вже подивився й не взяв
     days = ad.get("days_listed") or 0
     if days >= 30:
@@ -189,6 +197,12 @@ def evaluate(ad, cfg, median_ppm=None):
     ad["rejected"] = reject_reason(ad, cfg)
     ad["tier"] = tier_of(ad, cfg)
     ad["score"] = 0 if ad["rejected"] else score(ad, cfg)
+
+    if (ad.get("rooms") or 0) >= 2 and any(w in _text(ad) for w in STUDIO):
+        note = "студія — окремих кімнат може не бути"
+        existing = ad.get("restrictions")
+        if note not in (existing or ""):
+            ad["restrictions"] = "; ".join(filter(None, [existing, note]))
 
     marks = risk.flags(ad, median_ppm)
     ad["risk_flags"] = "; ".join(marks) or None

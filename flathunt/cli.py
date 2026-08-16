@@ -196,7 +196,8 @@ def cmd_collect(args):
         except Exception as exc:
             print(f"Mongo недоступна, пропускаю синхронізацію: {exc}")
 
-    print(f"разом: зібрано {total_fetched}, нових {total_new}, надіслано {total_sent}")
+    print(f"разом: зібрано {total_fetched}, нових {total_new}, надіслано {total_sent} "
+          f"[{datetime.now():%H:%M:%S}]")
 
 
 def recipients(cfg):
@@ -326,6 +327,10 @@ def cmd_watch(args):
     print(f"watch: інтервал {args.interval} с, {window}", flush=True)
     while True:
         started = time.time()
+        # Без мітки часу неможливо зрозуміти, чому оголошення дійшло
+        # за двадцять хвилин замість десяти: чи то прохід затягнувся,
+        # чи то OLX показав його в видачі не одразу
+        print(f"\n--- прохід {datetime.now():%H:%M:%S} ---", flush=True)
         try:
             cmd_collect(argparse.Namespace(
                 quiet=args.quiet, force=args.force, seed=False, llm_limit=args.llm_limit))
