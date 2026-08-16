@@ -421,6 +421,26 @@ def cmd_sync(args):
     print(f"вивантажено: оголошень {put[0]}, геокешу {put[1]}")
 
 
+def cmd_doctor(args):
+    """Перевірка оточення: що працює, що ні і чому."""
+    cfg = load_config()
+    print("=== Mongo ===")
+    for line in sync.diagnose():
+        print("  " + line)
+    print("\n=== Telegram ===")
+    token = cfg["notify"].get("telegram_token")
+    print(f"  токен заданий: {bool(token)}")
+    print(f"  одержувачів: {len(recipients(cfg))}")
+    print("\n=== Gemini ===")
+    print(f"  ключ заданий: {bool(cfg['llm'].get('gemini_key'))} | модель: {cfg['llm'].get('model')}")
+    print("\n=== DIM.RIA ===")
+    print(f"  ключ заданий: {bool(os.environ.get('RIA_API_KEY'))}")
+    print("\n=== База ===")
+    conn = store.connect()
+    print(f"  файл: {store.DB_PATH}")
+    print(f"  оголошень: {conn.execute('SELECT count(*) FROM ads').fetchone()[0]}")
+
+
 def cmd_stats(args):
     conn = store.connect()
     q = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
@@ -462,6 +482,9 @@ def main():
     r.add_argument("--all", action="store_true")
     r.add_argument("--limit", type=int, default=40)
     r.set_defaults(func=cmd_report)
+
+    d = sub.add_parser("doctor", help="перевірити оточення й підключення")
+    d.set_defaults(func=cmd_doctor)
 
     s = sub.add_parser("stats")
     s.set_defaults(func=cmd_stats)

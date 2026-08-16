@@ -40,20 +40,62 @@ def configured():
     return bool(load_env_uri())
 
 
+LAST_ERROR = {"message": None}
+
+
 def client(uri=None):
     uri = uri or load_env_uri()
     if not uri:
+        LAST_ERROR["message"] = "MONGODB_URI порожній"
         return None
     try:
         from pymongo import MongoClient
     except ImportError:
+        LAST_ERROR["message"] = "пакет pymongo не встановлений"
         return None
     try:
         cli = MongoClient(uri, serverSelectionTimeoutMS=8000, connectTimeoutMS=8000)
         cli.admin.command("ping")
+        LAST_ERROR["message"] = None
         return cli
-    except Exception:
+    except Exception as exc:
+        # Мовчазне None тут коштувало години здогадок: користувач бачив
+        # «Mongo недоступна» й не мав жодної підказки, чи це адреса,
+        # чи пароль, чи фаєрвол Atlas.
+        LAST_ERROR["message"] = f"{type(exc).__name__}: {str(exc)[:300]}"
         return None
+
+
+def diagnose(uri=None):
+    """Що саме не так із підключенням. Нічого секретного не друкує."""
+    import re as _re
+
+    raw = uri or load_env_uri()
+    out = []
+    if not raw:
+        return ["MONGODB_URI не заданий або порожній"]
+
+    out.append(f"довжина рядка: {len(raw)}")
+    if raw != raw.strip():
+        out.append("УВАГА: на початку або в кінці є пробіли")
+    if raw[0] in "\"'" or raw[-1] in "\"'":
+        out.append("УВАГА: рядок узятий у лапки — Coolify передає їх як частину значення")
+    if not raw.startswith(("mongodb://", "mongodb+srv://")):
+        out.append(f"УВАГА: починається не зі схеми mongodb, а з {raw[:12]!r}")
+    if "$" in raw:
+        out.append("УВАГА: у рядку є $ — docker compose тлумачить його як змінну, "
+                   "у compose-файлі його треба подвоїти як $$")
+    if raw.count("@") != 1:
+        out.append(f"УВАГА: символів @ рівно {raw.count('@')}, має бути один — "
+                   "спецсимволи в паролі треба закодувати відсотками")
+    host = _re.sub(r"^mongodb(\+srv)?://[^@]*@", "", raw).split("/")[0].split("?")[0]
+    out.append(f"хост: {host}")
+    if "&" in raw and "?" not in raw:
+        out.append("УВАГА: є & без ?, схоже рядок обрізаний")
+
+    client(raw)
+    out.append("результат зʼєднання: " + (LAST_ERROR["message"] or "успішно"))
+    return out
 
 
 def push(conn, cli):
