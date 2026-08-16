@@ -191,14 +191,25 @@ def enrich_pending(conn, cfg, limit=40):
         apply_to(ad, data)
         if ad.get("street") and not row["street"]:
             found_street += 1
+        # Нова адреса знецінює все, що з неї виводилось. Без цього запис
+        # має точність «модель+буд», а координати лишаються від центру
+        # району, і крок уточнення такий рядок навіть не помічає.
+        street_changed = bool(ad.get("street")) and ad.get("street") != row["street"]
         conn.execute(
             """UPDATE ads SET street = ?, street_conf = coalesce(?, street_conf),
                    commission = ?, utilities = ?, deposit = ?, min_term = ?,
-                   restrictions = ?, backup_power = ?, llm_done = 1
+                   restrictions = ?, backup_power = ?, llm_done = 1,
+                   lat = CASE WHEN ? THEN NULL ELSE lat END,
+                   lon = CASE WHEN ? THEN NULL ELSE lon END,
+                   dist_km = CASE WHEN ? THEN NULL ELSE dist_km END,
+                   walk_min = CASE WHEN ? THEN NULL ELSE walk_min END,
+                   walk_km = CASE WHEN ? THEN NULL ELSE walk_km END
                WHERE id = ?""",
             (ad.get("street"), ad.get("street_conf"), ad.get("commission"), ad.get("utilities"),
              ad.get("deposit"), ad.get("min_term"), ad.get("restrictions"),
-             ad.get("backup_power"), row["id"]),
+             ad.get("backup_power"),
+             street_changed, street_changed, street_changed, street_changed, street_changed,
+             row["id"]),
         )
         done += 1
     conn.commit()

@@ -35,6 +35,19 @@ def _text(ad):
 def reject_reason(ad, cfg):
     """Повертає причину відсіву або None."""
     text = _text(ad)
+
+    # Звірка з поточним конфігом. Без неї база тримає оголошення,
+    # зібрані за старими критеріями: у списку однокімнатних до
+    # дванадцяти тисяч висіли варіанти по чотирнадцять, а трикімнатні
+    # лишались живими після того, як конфігурацію прибрали.
+    search = next((s for s in cfg["searches"] if s["key"] == ad.get("search_key")), None)
+    if search is None:
+        return "конфігурацію вимкнено"
+    price = ad.get("price")
+    if price is not None and not (search["price_min"] <= price <= search["price_max"]):
+        return f"поза вилкою {search['price_min']}–{search['price_max']}"
+    if ad.get("rooms") and search.get("rooms_count") and ad["rooms"] != search["rooms_count"]:
+        return "не та кімнатність"
     area = " ".join(filter(None, [ad.get("district"), ad.get("street"), ad.get("title")])).lower()
 
     for bad in cfg["exclude_areas"]:

@@ -114,7 +114,22 @@ def cmd_collect(args):
         median_ppm = ppm[len(ppm) // 2] if ppm else None
 
         new_here = 0
+        known = {r["id"]: r for r in conn.execute(
+            "SELECT id, street, street_conf, lat, lon, dist_km, walk_min, walk_km FROM ads"
+        ).fetchall()}
+
         for ad in ads:
+            # Збирач знає лише те, що віддав OLX. Адресу, знайдену моделлю,
+            # і пораховану відстань він не знає — а locate без них скочується
+            # на центр району й записує гіршу точність поверх кращої.
+            # Тому спершу підкладаємо вже відоме.
+            prev = known.get(ad["id"])
+            if prev is not None and prev["street"]:
+                for field in ("street", "street_conf", "lat", "lon", "dist_km", "walk_min", "walk_km"):
+                    if prev[field] is not None:
+                        ad.setdefault(field, prev[field])
+                        ad[field] = prev[field]
+
             geo.locate(conn, ad, cfg)
             score.evaluate(ad, cfg, median_ppm)
             prev = store.record_price(conn, ad["id"], ad.get("price"))
@@ -148,13 +163,19 @@ def cmd_collect(args):
     # Адреси, які знайшла модель, ще не геокодовані: гео працює під час
     # збору, а модель розбирає описи після нього. Без цього кроку
     # оголошення з адресою від моделі назавжди лишалось без хвилин ходьби.
+    # Не лише ті, у кого координат немає зовсім: запасна прив'язка до
+    # центру району теж записує lat, і без цієї умови точна адреса,
+    # знайдена моделлю, ніколи б не геокодувалась — район назавжди
+    # заблокував би вулицю.
     pending_geo = conn.execute(
-        """SELECT * FROM ads WHERE street IS NOT NULL AND lat IS NULL
+        """SELECT * FROM ads WHERE street IS NOT NULL
+           AND (lat IS NULL OR ifnull(street_conf,'') = 'район')
            AND rejected IS NULL LIMIT 40"""
     ).fetchall()
     located = 0
     for row in pending_geo:
         ad = dict(row)
+        ad["lat"] = ad["lon"] = ad["walk_min"] = None   # інакше стара точка лишиться
         geo.locate(conn, ad, cfg)
         if ad.get("lat"):
             score.evaluate(ad, cfg)
