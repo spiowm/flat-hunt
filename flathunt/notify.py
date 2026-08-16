@@ -29,6 +29,36 @@ def _get(ad, key, default=None):
     return default if value is None else value
 
 
+def _human_age(iso):
+    """«11 років», «3 міс.», «14 днів» — щоб вік читався одразу."""
+    if not iso:
+        return None
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.fromisoformat(str(iso))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    days = (datetime.now(timezone.utc) - dt).days
+    if days < 31:
+        return f"{days} дн."
+    if days < 365:
+        return f"{days // 30} міс."
+    years = days // 365
+    return f"{years} р." if years < 5 else f"{years} років"
+
+
+def _posted(days):
+    if days is None:
+        return None
+    if days == 0:
+        return "викладено сьогодні"
+    if days == 1:
+        return "викладено вчора"
+    return f"висить {days} дн."
+
+
 def _money(value):
     return f"{int(value):,}".replace(",", " ")
 
@@ -107,12 +137,18 @@ def card(ad, anchor=None):
     if extras:
         lines.append(html.escape(" · ".join(extras)))
 
+    # Вік оголошення й вік акаунта поруч: разом вони дають картину довіри
+    # одним поглядом. Свіже оголошення з дводенного акаунта і свіже
+    # оголошення з акаунта на десять років — зовсім різні речі.
+    timeline = [x for x in (_posted(_get(ad, "days_listed")),
+                            (f"акаунт {_human_age(_get(ad, 'user_created'))}"
+                             if _human_age(_get(ad, "user_created")) else None)) if x]
+    if timeline:
+        lines.append("📅 " + html.escape(" · ".join(timeline)))
+
     warns = []
     if _get(ad, "restrictions"):
         warns.append(str(_get(ad, "restrictions")))
-    days = _get(ad, "days_listed")
-    if days and days >= 30:
-        warns.append(f"висить {days} днів")
     drop = _get(ad, "price_drop")
     if drop and drop > 0:
         warns.append(f"ціна впала на {_money(drop)} ₴")
