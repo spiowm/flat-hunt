@@ -52,7 +52,7 @@ def enabled(cfg):
     return bool(cfg.get("llm", {}).get("gemini_key"))
 
 
-def analyse(cfg, title, description):
+def analyse(cfg, title, description, is_business=None):
     """Повертає dict за схемою або None, якщо не вдалось."""
     key = cfg["llm"]["gemini_key"]
     model = cfg["llm"]["model"]
@@ -62,16 +62,68 @@ def analyse(cfg, title, description):
             "responseMimeType": "application/json",
             "responseSchema": SCHEMA,
             "temperature": 0,
+            # Витяг фактів із короткого опису не потребує міркувань, а
+            # рахуються вони як вихідні токени за найвищою ставкою: без
+            # цього рядка кожен виклик витрачав від трьохсот до семисот
+            # токенів думання і коштував вчетверо дорожче за той самий
+            # результат.
+            "thinkingConfig": {"thinkingLevel": "low"},
         },
     }
     try:
         r = requests.post(ENDPOINT.format(model=model), params={"key": key}, json=body, timeout=60)
         if not r.ok:
             return None
-        text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-        return json.loads(text)
+        payload = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        data = json.loads(payload)
+        _grounded(data, f"{title} {description}", is_business)
+        return data
     except Exception:
         return None
+
+
+# Підтвердження в тексті для кожного твердження. Модель схильна
+# підставляти правдоподібне замість «невідомо» — дешева особливо, — а
+# вигадана «комісія: немає» одразу занижує розрахунок вартості й додає
+# балів. Тому кожне твердження мусить мати опору в самому описі.
+EVIDENCE = {
+    ("commission", "немає"): ("без комісі", "без комиссии", "комісії нема", "безкомісійн",
+                               "без посередник", "від власника", "власник здає"),
+    ("commission", "повна"): ("комісі", "комиссия"),
+    ("commission", "половина"): ("комісі", "комиссия"),
+    ("utilities", "входить"): ("включен", "входить", "все включ", "разом з комунал"),
+    ("utilities", "окремо"): ("комунал", "окремо", "додатково", "лічильник"),
+    ("backup_power", "є"): ("генератор", "інвертор", "ecoflow", "резервн", "акумулятор",
+                             "зарядна станц", "безперебійн", "без електроенерг",
+                             "не залежить від світл", "при відключенн"),
+    ("pets_allowed", "ні"): ("тварин", "котів", "собак", "без домашніх"),
+    ("kids_allowed", "ні"): ("дітей", "дітьми", "діти"),
+}
+
+
+def _grounded(data, text, is_business=None):
+    """Викидає твердження, яких немає на що сперти в тексті.
+
+    Опора — не лише слова опису. Якщо оголошення подав власник, а не
+    агенція, «комісії немає» це обґрунтований висновок, а не вигадка:
+    власники комісії не беруть.
+    """
+    low = (text or "").lower()
+    dropped = []
+    if is_business == 0 and data.get("commission") == "немає":
+        return dropped
+    for (field, value), markers in EVIDENCE.items():
+        if data.get(field) != value:
+            continue
+        if not any(m in low for m in markers):
+            data[field] = "невідомо"
+            dropped.append(f"{field}={value}")
+    for field in ("deposit_months", "min_term_months"):
+        if data.get(field) and not any(m in low for m in
+                                       ("депозит", "застав", "останній міс", "термін", "міс", "рік")):
+            data[field] = 0
+            dropped.append(field)
+    return dropped
 
 
 def _clean(value):
@@ -123,7 +175,7 @@ def enrich_pending(conn, cfg, limit=40):
         return 0, 0
 
     rows = conn.execute(
-        """SELECT id, title, description, street FROM ads
+        """SELECT id, title, description, street, is_business FROM ads
            WHERE ifnull(llm_done, 0) = 0 AND rejected IS NULL AND dup_of IS NULL
            ORDER BY score DESC LIMIT ?""",
         (limit,),
@@ -131,7 +183,7 @@ def enrich_pending(conn, cfg, limit=40):
 
     done = found_street = 0
     for row in rows:
-        data = analyse(cfg, row["title"], row["description"])
+        data = analyse(cfg, row["title"], row["description"], row["is_business"])
         if data is None:
             conn.execute("UPDATE ads SET llm_done = -1 WHERE id = ?", (row["id"],))
             continue
