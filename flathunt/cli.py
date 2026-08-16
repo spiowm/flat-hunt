@@ -75,6 +75,11 @@ def cmd_collect(args):
         got_ads, got_geo = sync.pull(conn, mongo)
         if got_ads or got_geo:
             print(f"з Mongo підтягнуто: позначок {got_ads}, геокешу {got_geo}")
+    elif sync.configured():
+        # Мовчазна деградація тут найгірша: спільний стан відвалюється,
+        # а дізнаєшся про це з подвійних сповіщень
+        print("УВАГА: MONGODB_URI заданий, але Mongo недоступна — "
+              "прохід іде без спільного стану")
 
     if not args.force:
         hour = datetime.now().hour

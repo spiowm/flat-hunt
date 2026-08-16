@@ -9,14 +9,39 @@ Mongo тримає спільну копію, щоб збирач на VPS і б
 не має падати через це.
 """
 import os
+from pathlib import Path
 
 from . import store
 
 DB_NAME = "flat_hunt"
 
 
+def load_env_uri():
+    """Дістає URI з оточення, за потреби прочитавши .env самостійно.
+
+    Без цього будь-який виклик у обхід cli.load_config — а саме так
+    робитимуть локальні аналізатори — мовчки лишався без підключення.
+    """
+    uri = os.environ.get("MONGODB_URI")
+    if uri:
+        return uri
+    env = Path(__file__).resolve().parent.parent / ".env"
+    if not env.exists():
+        return None
+    for line in env.read_text(encoding="utf-8").splitlines():
+        key, _, value = line.strip().partition("=")
+        if key.strip() == "MONGODB_URI":
+            return value.strip().strip('"').strip("'") or None
+    return None
+
+
+def configured():
+    """Чи взагалі просили синхронізацію."""
+    return bool(load_env_uri())
+
+
 def client(uri=None):
-    uri = uri or os.environ.get("MONGODB_URI")
+    uri = uri or load_env_uri()
     if not uri:
         return None
     try:
