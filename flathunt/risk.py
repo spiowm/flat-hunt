@@ -102,7 +102,7 @@ def corpus_flags(conn):
             flags.append(mark)
             conn.execute(
                 "UPDATE ads SET risk_flags = ?, risk_level = ?, score = max(0, score - 12) WHERE id = ?",
-                ("; ".join(flags), "середній" if age > 3 else "високий", ad["id"]),
+                ("; ".join(flags), "medium" if age > 3 else "high", ad["id"]),
             )
             marked += 1
     conn.commit()
@@ -117,7 +117,7 @@ def level(flag_list):
     # Свіжий акаунт більше не «низький»: саме так виглядає збір контактів
     fresh = any(f.startswith("акаунту лише") or "і вже" in f for f in flag_list)
     if fresh or len(set(flag_list) & heavy) >= 2 or len(flag_list) >= 3:
-        return "високий"
+        return "high"
     if set(flag_list) & heavy:
-        return "середній"
-    return "низький"
+        return "medium"
+    return "low"

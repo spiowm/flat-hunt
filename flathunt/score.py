@@ -42,21 +42,21 @@ def reject_reason(ad, cfg):
     # лишались живими після того, як конфігурацію прибрали.
     search = next((s for s in cfg["searches"] if s["key"] == ad.get("search_key")), None)
     if search is None:
-        return "конфігурацію вимкнено"
+        return "search config disabled"
     price = ad.get("price")
     if price is not None and not (search["price_min"] <= price <= search["price_max"]):
-        return f"поза вилкою {search['price_min']}–{search['price_max']}"
+        return f"outside band {search['price_min']}-{search['price_max']}"
     if ad.get("rooms") and search.get("rooms_count") and ad["rooms"] != search["rooms_count"]:
-        return "не та кімнатність"
+        return "wrong room count"
     area = " ".join(filter(None, [ad.get("district"), ad.get("street"), ad.get("title")])).lower()
 
     for bad in cfg["exclude_areas"]:
         if bad.lower() in area or bad.lower() in text:
-            return f"район: {bad}"
+            return f"area: {bad}"
 
     for bad in cfg["exclude_text"]:
         if bad.lower() in text:
-            return f"текст: {bad}"
+            return f"text: {bad}"
 
     walk = ad.get("walk_min")
     conf = ad.get("street_conf")
@@ -67,10 +67,10 @@ def reject_reason(ad, cfg):
         exact = conf in ("вул+буд", "модель+буд")
         cap = cfg["walk_tiers"]["ok"] if exact else cfg["walk_tiers"].get("ok_street_only", 90)
         if walk > cap:
-            return f"далеко: {walk} хв пішки"
+            return f"too far: {walk} min walk"
     dist = ad.get("dist_km")
     if walk is None and dist is not None and dist > cfg["tiers"]["ok"]:
-        return f"далеко: {dist} км"
+        return f"too far: {dist} km"
 
     rooms = ad.get("rooms") or 0
     if rooms >= cfg["require_separate_layout_from_rooms"]:
@@ -79,33 +79,33 @@ def reject_reason(ad, cfg):
         # а не викинути: через цей відсів у топ не потрапила квартира
         # за двадцять одну хвилину від Анни, а таких там одиниці.
         if any(w in text for w in SOLO_ONLY):
-            return "тільки для однієї особи"
+            return "single occupant only"
 
     if rooms == 1 and any(w in text for w in SOLO_ONLY) and (ad.get("people") or 1) > 1:
-        return "тільки для однієї особи"
+        return "single occupant only"
 
     if any(w in text for w in FAMILY_ONLY):
-        return "тільки сім'ям з дітьми"
+        return "families with children only"
 
     if (ad.get("people") or 1) > 1 and any(w in text for w in COUPLE_OR_SOLO):
-        return "тільки парі або одній особі"
+        return "couple or single person only"
 
     age_cfg = cfg.get("account_age") or {}
     floor_days = age_cfg.get("reject_below_days")
     if floor_days:
         age = risk._age_days(ad.get("user_created"))
         if age is not None and age < floor_days:
-            return f"акаунту продавця {age} дн. — надто свіжий"
+            return f"seller account {age} days old — too fresh"
 
     cap = cfg.get("max_days_listed")
     if cap and (ad.get("days_listed") or 0) > cap:
-        return f"висить {ad['days_listed']} днів — приманка, а не житло"
+        return f"listed {ad['days_listed']} days — bait, not housing"
 
     # Те, що витягла модель з опису: гуртожиток квартирою не є
     haystack = f"{text} {(ad.get('restrictions') or '').lower()}"
     for bad in cfg.get("exclude_llm") or []:
         if bad.lower() in haystack:
-            return f"опис: {bad}"
+            return f"description: {bad}"
 
     return None
 
@@ -143,24 +143,24 @@ def tier_of(ad, cfg):
     if walk is not None:
         t = cfg["walk_tiers"]
         if walk <= t["ideal"]:
-            return "ідеал"
+            return "ideal"
         if walk <= t["good"]:
-            return "добре"
+            return "good"
         if walk <= t["ok"]:
-            return "далекувато"
-        return "поза"
+            return "far"
+        return "out"
 
     dist = ad.get("dist_km")
     if dist is None:
-        return "невідомо"
+        return "unknown"
     t = cfg["tiers"]
     if dist <= t["ideal"]:
-        return "ідеал"
+        return "ideal"
     if dist <= t["good"]:
-        return "добре"
+        return "good"
     if dist <= t["ok"]:
-        return "далекувато"
-    return "поза"
+        return "far"
+    return "out"
 
 
 def score(ad, cfg):
@@ -170,10 +170,10 @@ def score(ad, cfg):
 
     if ad.get("street_conf") == "район":
         # бал як за невідому адресу, а не як за точну далеку
-        tier = "невідомо"
+        tier = "unknown"
     else:
         tier = tier_of(ad, cfg)
-    pts += {"ідеал": 40, "добре": 30, "далекувато": 15}.get(
+    pts += {"ideal": 40, "good": 30, "far": 15}.get(
         tier, 12 if "центр" in text else 6)
 
     # ціна на особу відносно верхньої межі вилки
@@ -263,9 +263,9 @@ def evaluate(ad, cfg, median_ppm=None):
     ad["risk_flags"] = "; ".join(marks) or None
     ad["risk_level"] = risk.level(marks)
     # Підозріле не відсіюємо — рішення за людиною, але вниз списку опускаємо
-    if ad["risk_level"] == "високий":
+    if ad["risk_level"] == "high":
         ad["score"] = max(0, ad["score"] - 20)
-    elif ad["risk_level"] == "середній":
+    elif ad["risk_level"] == "medium":
         ad["score"] = max(0, ad["score"] - 8)
 
     ad["real_cost"] = real_cost(ad, cfg)

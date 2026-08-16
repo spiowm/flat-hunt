@@ -34,7 +34,7 @@ def top_for(conn, cfg, search_key, recipient, limit=8):
     sql = f"""SELECT * FROM ads
              WHERE search_key = ? AND rejected IS NULL AND dup_of IS NULL
                AND {store.gone_clause('ads')}
-               AND ifnull(risk_level,'') != 'високий'"""
+               AND ifnull(risk_level,'') != 'high'"""
     cap = (recipient or {}).get("max_walk_min")
     if cap:
         sql += " AND (walk_min IS NULL OR walk_min <= ?)"

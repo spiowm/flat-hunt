@@ -293,7 +293,7 @@ def pending_for(conn, recipient, default_min_score):
     sql = f"""SELECT a.* FROM ads a
              WHERE a.rejected IS NULL AND a.dup_of IS NULL
                AND {gone_clause('a')}
-               AND ifnull(a.risk_level, '') != 'високий'
+               AND ifnull(a.risk_level, '') != 'high'
                AND NOT EXISTS (SELECT 1 FROM notifications n
                                WHERE n.ad_id = a.id AND n.chat_id = ?)
                AND a.score >= ?"""

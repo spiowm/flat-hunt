@@ -9,8 +9,11 @@ import html
 
 import requests
 
-TIER_MARK = {"ідеал": "🟢", "добре": "🟡", "далекувато": "🟠", "невідомо": "⚪"}
-RISK_MARK = {"високий": "🔴", "середній": "🟠", "низький": "🟡"}
+TIER_MARK = {"ideal": "🟢", "good": "🟡", "far": "🟠", "unknown": "⚪"}
+RISK_MARK = {"high": "🔴", "medium": "🟠", "low": "🟡"}
+# Всередині коду рівні англійською, а в картку йде українською —
+# картку читає людина, логи читає розробник.
+RISK_WORD = {"high": "високий", "medium": "середній", "low": "низький"}
 ROOMS_WORD = {1: "1-кімнатна", 2: "2-кімнатна", 3: "3-кімнатна"}
 
 KEYBOARD = {
@@ -154,7 +157,7 @@ def card(ad, anchor=None):
         warns.append(f"ціна впала на {_money(drop)} ₴")
     level = _get(ad, "risk_level")
     if level:
-        warns.append(f"ризик {level}: {_get(ad, 'risk_flags', '')}")
+        warns.append(f"ризик {RISK_WORD.get(level, level)}: {_get(ad, 'risk_flags', '')}")
     if warns:
         lines.append("")
         lines.append("<blockquote>" + html.escape(" · ".join(warns)) + "</blockquote>")
@@ -183,7 +186,7 @@ def digest(rows, title, warming=False):
         if _get(r, "commission") == "немає":
             tags.append("без комісії")
         if _get(r, "risk_level"):
-            tags.append(f"⚠{_get(r, 'risk_level')}")
+            tags.append(f"⚠{RISK_WORD.get(_get(r, 'risk_level'), _get(r, 'risk_level'))}")
         out.append(
             f'{i}. <b>{_money(_get(r, "price", 0))} ₴</b> · {_get(r, "area", 0):g} м² · {where}\n'
             f'    <a href="{html.escape(str(_get(r, "url", "")))}">{html.escape(str(street))}</a>'

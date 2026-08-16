@@ -60,7 +60,7 @@ def fetch_state(url, user_agent, timeout=30):
 
     r = net.with_retry(
         once,
-        on_retry=lambda n, d, e: print(f"  спроба {n} не вдалась ({str(e)[:60]}), повтор через {d} с", flush=True),
+        on_retry=lambda n, d, e: print(f"  attempt {n} failed ({str(e)[:60]}), retrying in {d}s", flush=True),
     )
     m = STATE_RE.search(r.text)
     if not m:

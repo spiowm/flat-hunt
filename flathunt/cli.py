@@ -74,18 +74,18 @@ def cmd_collect(args):
     if mongo:
         got_ads, got_geo = sync.pull(conn, mongo)
         if got_ads or got_geo:
-            print(f"з Mongo підтягнуто: позначок {got_ads}, геокешу {got_geo}")
+            print(f"mongo pull: {got_ads} sent-marks, {got_geo} geocache")
     elif sync.configured():
         # Мовчазна деградація тут найгірша: спільний стан відвалюється,
         # а дізнаєшся про це з подвійних сповіщень
-        print("УВАГА: MONGODB_URI заданий, але Mongo недоступна — "
-              "прохід іде без спільного стану")
+        print("WARNING: MONGODB_URI is set but mongo is unreachable — "
+              "running without shared state")
 
     if not args.force:
         hour = datetime.now().hour
         lo, hi = cfg["collector"]["active_hours"]
         if not (lo <= hour < hi):
-            print(f"поза робочим вікном {lo}:00–{hi}:00, пропускаю")
+            print(f"outside active hours {lo}:00-{hi}:00, skipping")
             return
 
     total_fetched = total_new = total_sent = 0
@@ -95,16 +95,16 @@ def cmd_collect(args):
         try:
             batches.append((search["key"], olx.collect(search, cfg)))
         except Exception as exc:
-            print(f"[{search['key']}] OLX не зібрався: {exc}")
+            print(f"[{search['key']}] olx fetch failed: {exc}")
             store.log_run(conn, "olx", 0, 0, 0, f"{search['key']}: {exc}")
 
     try:
         ria = dimria.collect(cfg["searches"], cfg)
         if ria:
             batches.append(("dimria", ria))
-            print(f"[dimria] зібрано {len(ria)}")
+            print(f"[dimria] fetched {len(ria)}")
     except Exception as exc:
-        print(f"[dimria] не зібралось: {exc}")
+        print(f"[dimria] fetch failed: {exc}")
         store.log_run(conn, "dimria", 0, 0, 0, str(exc))
 
     for label, ads in batches:
@@ -146,20 +146,20 @@ def cmd_collect(args):
         if label != "dimria" and ads:
             gone = store.mark_missing(conn, label, [a["id"] for a in ads])
             if gone:
-                print(f"[{label}] зникло з OLX: {gone}")
+                print(f"[{label}] gone from olx: {gone}")
             conn.commit()
 
         total_fetched += len(ads)
         total_new += new_here
         if label != "dimria":
-            print(f"[{label}] зібрано {len(ads)}, нових {new_here}")
+            print(f"[{label}] fetched {len(ads)}, new {new_here}")
 
     # Розбір описів моделлю: вулиця там, де регекс не впорався, плюс
     # комісія, комуналка й обмеження — усе це живе тільки у вільному тексті
     if llm.enabled(cfg):
         done, streets = llm.enrich_pending(conn, cfg, limit=args.llm_limit)
         if done:
-            print(f"розібрано моделлю {done}, з них знайдено вулиць {streets}")
+            print(f"llm parsed {done}, streets found {streets}")
             for row in conn.execute(
                 "SELECT * FROM ads WHERE llm_done = 1 AND rejected IS NULL"
             ).fetchall():
@@ -197,7 +197,7 @@ def cmd_collect(args):
             located += 1
     if located:
         conn.commit()
-        print(f"геокодовано адрес від моделі: {located}")
+        print(f"geocoded llm addresses: {located}")
 
     photo.fill_missing(conn, limit=60)
     store.refresh_market_signals(conn)
@@ -219,27 +219,27 @@ def cmd_collect(args):
             rescored += 1
     conn.commit()
     if rescored:
-        print(f"переоцінено після збагачення: {rescored}")
+        print(f"rescored after enrichment: {rescored}")
 
     from . import risk
     suspicious = risk.corpus_flags(conn)
     if suspicious:
-        print(f"позначено як свіжий акаунт із кількома оголошеннями: {suspicious}")
+        print(f"flagged fresh account with multiple ads: {suspicious}")
 
     dups = store.sweep_duplicates(conn)
     conn.commit()
     photo_dups, stolen = photo.group_by_photo(conn)
     if dups or photo_dups:
-        print(f"позначено повторів: {dups} за адресою, {photo_dups} за фото")
+        print(f"duplicates: {dups} by address, {photo_dups} by photo")
     if stolen:
-        print(f"підозра на крадені фото: {stolen}")
+        print(f"suspected stolen photos: {stolen}")
 
     if args.seed:
         chats = [r["chat_id"] for r in recipients(cfg)]
         n = store.seed_notifications(conn, chats)
         conn.commit()
-        print(f"бекленг позначено як переглянутий: {n} позначок на {len(chats)} одержувач(ів). "
-              f"Далі піде лише те, що зʼявиться після цього моменту.")
+        print(f"backlog marked as seen: {n} marks for {len(chats)} recipient(s). "
+              f"Only ads appearing from now on will be sent.")
         return
 
     if not args.quiet:
@@ -251,11 +251,11 @@ def cmd_collect(args):
     if mongo:
         try:
             n_ads, n_geo = sync.push(conn, mongo)
-            print(f"у Mongo вивантажено: оголошень {n_ads}, геокешу {n_geo}")
+            print(f"mongo push: {n_ads} ads, {n_geo} geocache")
         except Exception as exc:
-            print(f"Mongo недоступна, пропускаю синхронізацію: {exc}")
+            print(f"mongo unreachable, skipping sync: {exc}")
 
-    print(f"разом: зібрано {total_fetched}, нових {total_new}, надіслано {total_sent} "
+    print(f"total: fetched {total_fetched}, new {total_new}, sent {total_sent} "
           f"[{datetime.now():%H:%M:%S}]")
 
 
@@ -276,14 +276,14 @@ def deliver(cfg, conn):
         for row in pending:
             ok, err = notify.send_ad(cfg, row, who["chat_id"])
             if not ok:
-                print(f"[{who['name']}] не надіслано: {err}")
+                print(f"[{who['name']}] send failed: {err}")
                 break
             store.mark_sent(conn, row["id"], who["chat_id"])
             sent += 1
         conn.commit()
         sent_total += sent
         if sent:
-            print(f"[{who['name']}] надіслано {sent}")
+            print(f"[{who['name']}] sent {sent}")
     return sent_total
 
 
@@ -297,31 +297,31 @@ def cmd_report(args):
     ).fetchall()
 
     if not rows:
-        print("порожньо — спершу запусти: python3 run.py collect --quiet --force")
+        print("empty — run first: flat-hunt collect --quiet --force")
         return
 
-    header = (f"{'бал':>4} {'хв':>4} {'ціна':>7} {'реально':>8} {'к':>1} {'м²':>4} "
-              f"{'хто':<7} {'дж':<6} вулиця")
+    header = (f"{'score':>5} {'min':>4} {'price':>7} {'real':>8} {'r':>1} {'m2':>4} "
+              f"{'who':<7} {'src':<6} street")
     print(header)
     print("-" * len(header))
     for r in rows:
-        who = "власник" if not r["is_business"] else "агенція"
+        who = "owner" if not r["is_business"] else "agency"
         walk = f"{r['walk_min']}" if r["walk_min"] else "?"
         real = r["real_cost"] or round((r["price"] or 0) / max(1, r["people"] or 1))
         where_txt = r["street"] or ((r["district"] or "") + " " + (r["title"] or ""))[:34]
         marks = []
         if r["risk_level"]:
-            marks.append("⚠" + r["risk_level"][:3])
+            marks.append("risk:" + r["risk_level"])
         if r["commission"] == "немає":
-            marks.append("безком")
+            marks.append("no-fee")
         if r["price_drop"]:
-            marks.append("↓ціна")
+            marks.append("price-drop")
         if r["rejected"]:
             marks.append("✗ " + r["rejected"])
         print(f"{r['score']:>4} {walk:>4} {r['price'] or 0:>7} {real:>8} {r['rooms'] or 0:>1} "
               f"{r['area'] or 0:>4.0f} {who:<7} {(r['source'] or '')[:6]:<6} "
               f"{where_txt[:32]:<32} {' '.join(marks)}")
-    print(f"\nвсього рядків: {len(rows)}")
+    print(f"\ntotal rows: {len(rows)}")
 
 
 def cmd_chatid(args):
@@ -332,7 +332,7 @@ def cmd_chatid(args):
     cfg = load_config()
     token = cfg["notify"]["telegram_token"]
     if not token:
-        print("немає TELEGRAM_TOKEN у .env")
+        print("TELEGRAM_TOKEN missing in .env")
         return
 
     with urllib.request.urlopen(
@@ -348,8 +348,8 @@ def cmd_chatid(args):
             chats[chat["id"]] = chat.get("username") or chat.get("first_name") or chat.get("title")
 
     if not chats:
-        print("оновлень немає. Відкрий бота в Telegram, натисни Start\n"
-              "або напиши йому будь-що — і запусти цю команду ще раз.")
+        print("no updates. Open the bot in Telegram, press Start\n"
+              "or send it any message, then run this command again.")
         return
 
     chat_id, who = next(iter(chats.items()))
@@ -359,7 +359,7 @@ def cmd_chatid(args):
     else:
         text += f"\nTELEGRAM_CHAT_ID={chat_id}\n"
     ENV_FILE.write_text(text, encoding="utf-8")
-    print(f"знайдено chat_id {chat_id} ({who}) — записано в .env")
+    print(f"found chat_id {chat_id} ({who}) — written to .env")
 
 
 def cmd_test(args):
@@ -371,11 +371,11 @@ def cmd_test(args):
            ORDER BY score DESC LIMIT 1"""
     ).fetchone()
     if row is None:
-        print("база порожня")
+        print("database is empty")
         return
     for who in recipients(cfg):
         ok, err = notify.send_ad(cfg, row, who["chat_id"])
-        print(f"[{who['name']}] " + ("надіслано" if ok else f"не вдалось: {err}"))
+        print(f"[{who['name']}] " + ("sent" if ok else f"failed: {err}"))
 
 
 def cmd_watch(args):
@@ -385,24 +385,24 @@ def cmd_watch(args):
     import threading
 
     window = "цілодобово" if args.force else "робоче вікно з config.yaml"
-    print(f"watch: інтервал {args.interval} с, {window}", flush=True)
+    print(f"watch: interval {args.interval}s, {window}", flush=True)
 
     cfg = load_config()
     if recipients(cfg):
         threading.Thread(target=commands.listen_forever, args=(cfg, recipients(cfg)),
                          daemon=True).start()
-        print("кнопки: слухаю натискання окремим потоком", flush=True)
+        print("buttons: listening in a separate thread", flush=True)
     while True:
         started = time.time()
         # Без мітки часу неможливо зрозуміти, чому оголошення дійшло
         # за двадцять хвилин замість десяти: чи то прохід затягнувся,
         # чи то OLX показав його в видачі не одразу
-        print(f"\n--- прохід {datetime.now():%H:%M:%S} ---", flush=True)
+        print(f"\n--- pass {datetime.now():%H:%M:%S} ---", flush=True)
         try:
             cmd_collect(argparse.Namespace(
                 quiet=args.quiet, force=args.force, seed=False, llm_limit=args.llm_limit))
         except Exception as exc:  # цикл не має падати через одну помилку мережі
-            print(f"прохід впав: {exc}", flush=True)
+            print(f"pass failed: {exc}", flush=True)
         sleep_for = max(60, args.interval - (time.time() - started))
         time.sleep(sleep_for)
 
@@ -413,12 +413,12 @@ def cmd_sync(args):
     conn = store.connect()
     cli = sync.client()
     if cli is None:
-        print("Mongo недоступна або MONGODB_URI не заданий")
+        print("mongo unreachable or MONGODB_URI not set")
         return
     got = sync.pull(conn, cli)
     put = sync.push(conn, cli)
-    print(f"підтягнуто: позначок {got[0]}, геокешу {got[1]}")
-    print(f"вивантажено: оголошень {put[0]}, геокешу {put[1]}")
+    print(f"pulled: {got[0]} marks, {got[1]} geocache")
+    print(f"pushed: {put[0]} ads, {put[1]} geocache")
 
 
 def cmd_doctor(args):
@@ -429,38 +429,38 @@ def cmd_doctor(args):
         print("  " + line)
     print("\n=== Telegram ===")
     token = cfg["notify"].get("telegram_token")
-    print(f"  токен заданий: {bool(token)}")
-    print(f"  одержувачів: {len(recipients(cfg))}")
+    print(f"  token set: {bool(token)}")
+    print(f"  recipients: {len(recipients(cfg))}")
     print("\n=== Gemini ===")
-    print(f"  ключ заданий: {bool(cfg['llm'].get('gemini_key'))} | модель: {cfg['llm'].get('model')}")
+    print(f"  key set: {bool(cfg['llm'].get('gemini_key'))} | model: {cfg['llm'].get('model')}")
     print("\n=== DIM.RIA ===")
-    print(f"  ключ заданий: {bool(os.environ.get('RIA_API_KEY'))}")
-    print("\n=== База ===")
+    print(f"  key set: {bool(os.environ.get('RIA_API_KEY'))}")
+    print("\n=== Database ===")
     conn = store.connect()
-    print(f"  файл: {store.DB_PATH}")
-    print(f"  оголошень: {conn.execute('SELECT count(*) FROM ads').fetchone()[0]}")
+    print(f"  file: {store.DB_PATH}")
+    print(f"  ads: {conn.execute('SELECT count(*) FROM ads').fetchone()[0]}")
 
 
 def cmd_stats(args):
     conn = store.connect()
     q = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
-    print("усього в базі:      ", q("SELECT count(*) FROM ads"))
-    print("живих кандидатів:   ", q("SELECT count(*) FROM ads WHERE rejected IS NULL AND dup_of IS NULL"))
-    print("відсіяно:           ", q("SELECT count(*) FROM ads WHERE rejected IS NOT NULL"))
-    print("дублів:             ", q("SELECT count(*) FROM ads WHERE dup_of IS NOT NULL"))
-    print("від власника:       ", q("SELECT count(*) FROM ads WHERE is_business = 0"))
-    print("з розпізнаною вул.: ", q("SELECT count(*) FROM ads WHERE street IS NOT NULL"))
-    print("з координатами:     ", q("SELECT count(*) FROM ads WHERE dist_km IS NOT NULL"))
-    print("розібрано моделлю:  ", q("SELECT count(*) FROM ads WHERE llm_done = 1"))
-    print("висить 30+ днів:    ", q("SELECT count(*) FROM ads WHERE days_listed >= 30"))
+    print("ads in database:    ", q("SELECT count(*) FROM ads"))
+    print("live candidates:    ", q("SELECT count(*) FROM ads WHERE rejected IS NULL AND dup_of IS NULL"))
+    print("rejected:           ", q("SELECT count(*) FROM ads WHERE rejected IS NOT NULL"))
+    print("duplicates:         ", q("SELECT count(*) FROM ads WHERE dup_of IS NOT NULL"))
+    print("from owners:        ", q("SELECT count(*) FROM ads WHERE is_business = 0"))
+    print("with street:        ", q("SELECT count(*) FROM ads WHERE street IS NOT NULL"))
+    print("with coordinates:   ", q("SELECT count(*) FROM ads WHERE dist_km IS NOT NULL"))
+    print("llm parsed:         ", q("SELECT count(*) FROM ads WHERE llm_done = 1"))
+    print("listed 30+ days:    ", q("SELECT count(*) FROM ads WHERE days_listed >= 30"))
     conn2 = conn.execute("SELECT chat_id, count(*) n FROM notifications GROUP BY chat_id").fetchall()
     if conn2:
-        print("надіслано:")
+        print("sent:")
         for row in conn2:
             print(f"   {row['n']:>4}  chat {row['chat_id']}")
     else:
-        print("надіслано:           нічого")
-    print("\nпричини відсіву:")
+        print("sent:                nothing")
+    print("\nrejection reasons:")
     for row in conn.execute(
         "SELECT rejected, count(*) n FROM ads WHERE rejected IS NOT NULL GROUP BY rejected ORDER BY n DESC LIMIT 12"
     ):
