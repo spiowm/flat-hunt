@@ -140,6 +140,15 @@ def cmd_collect(args):
                 new_here += 1
         conn.commit()
 
+        # Оголошення, яких більше немає у видачі, після двох пропусків
+        # вважаємо знятими. Робимо це лише для конфігурацій, які зібрались
+        # успішно: інакше збій мережі позначив би зниклим геть усе.
+        if label != "dimria" and ads:
+            gone = store.mark_missing(conn, label, [a["id"] for a in ads])
+            if gone:
+                print(f"[{label}] зникло з OLX: {gone}")
+            conn.commit()
+
         total_fetched += len(ads)
         total_new += new_here
         if label != "dimria":

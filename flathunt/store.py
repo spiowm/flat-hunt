@@ -128,7 +128,7 @@ def _migrate(conn):
         ("utilities", "TEXT"), ("deposit", "TEXT"), ("min_term", "TEXT"),
         ("restrictions", "TEXT"), ("backup_power", "TEXT"), ("real_cost", "INTEGER"),
         ("llm_done", "INTEGER"), ("price_prev", "INTEGER"), ("price_drop", "INTEGER"),
-        ("days_listed", "INTEGER"),
+        ("days_listed", "INTEGER"), ("misses", "INTEGER"),
     ):
         if column not in have:
             conn.execute(f"ALTER TABLE ads ADD COLUMN {column} {decl}")
@@ -171,6 +171,41 @@ def upsert(conn, ad):
             [ad[k] for k in present] + [now(), ad["id"]],
         )
     return is_new
+
+
+def mark_missing(conn, search_key, seen_ids, threshold=2):
+    """Позначає оголошення, які зникли з видачі OLX.
+
+    Обережність тут принципова: одна мережева помилка не має ховати
+    пів бази, тому потрібні дві поспіль невдалі появи. Викликати можна
+    лише після успішного збору саме цієї конфігурації — інакше
+    порожній список означав би, що зникло все.
+    """
+    if not seen_ids:
+        return 0
+    marks = ",".join("?" for _ in seen_ids)
+    conn.execute(f"UPDATE ads SET misses = 0 WHERE id IN ({marks})", list(seen_ids))
+    conn.execute(
+        f"""UPDATE ads SET misses = ifnull(misses, 0) + 1
+            WHERE search_key = ? AND id NOT IN ({marks})""",
+        [search_key] + list(seen_ids),
+    )
+    # Зникнення живе в окремій колонці misses, а не в rejected. Перша
+    # версія писала його саме туди — і крок переоцінки, який щопроходу
+    # перераховує rejected, стирав позначку через хвилину після того,
+    # як вона зʼявилась.
+    return conn.execute(
+        "SELECT count(*) FROM ads WHERE search_key = ? AND ifnull(misses, 0) >= ?",
+        (search_key, threshold),
+    ).fetchone()[0]
+
+
+MISS_LIMIT = 2
+
+
+def gone_clause(alias="a"):
+    """Умова «оголошення ще у видачі» для запитів."""
+    return f"ifnull({alias}.misses, 0) < {MISS_LIMIT}"
 
 
 def _norm_street(street):
@@ -255,8 +290,9 @@ def pending_for(conn, recipient, default_min_score):
     # — так у чат пішли дві квартири з групи в чотири від акаунта,
     # створеного того ж дня. Поріг означає «варте твого часу», а таке
     # за визначенням не варте. У report вони лишаються видимими.
-    sql = """SELECT a.* FROM ads a
+    sql = f"""SELECT a.* FROM ads a
              WHERE a.rejected IS NULL AND a.dup_of IS NULL
+               AND {gone_clause('a')}
                AND ifnull(a.risk_level, '') != 'високий'
                AND NOT EXISTS (SELECT 1 FROM notifications n
                                WHERE n.ad_id = a.id AND n.chat_id = ?)

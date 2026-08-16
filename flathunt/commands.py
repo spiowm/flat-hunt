@@ -31,8 +31,9 @@ def _save_offset(conn, value):
 def top_for(conn, cfg, search_key, recipient, limit=8):
     """Найкраще під конкретну конфігурацію, з урахуванням фільтрів людини."""
     params = [search_key]
-    sql = """SELECT * FROM ads
+    sql = f"""SELECT * FROM ads
              WHERE search_key = ? AND rejected IS NULL AND dup_of IS NULL
+               AND {store.gone_clause('ads')}
                AND ifnull(risk_level,'') != 'високий'"""
     cap = (recipient or {}).get("max_walk_min")
     if cap:
