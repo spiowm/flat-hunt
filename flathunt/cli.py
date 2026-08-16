@@ -148,6 +148,25 @@ def cmd_collect(args):
     photo.fill_missing(conn, limit=60)
     store.refresh_market_signals(conn)
 
+    # Переоцінка після всіх збагачень. Порядок тут принциповий: вік
+    # оголошення, дані від моделі й хеші фото зʼявляються вже після
+    # першої оцінки, тож без цього проходу відсів «висить понад рік»
+    # не спрацював би на новому оголошенні жодного разу.
+    rescored = 0
+    for row in conn.execute("SELECT * FROM ads").fetchall():
+        ad = dict(row)
+        before = (ad["score"], ad["rejected"])
+        score.evaluate(ad, cfg)
+        if (ad["score"], ad["rejected"]) != before:
+            conn.execute(
+                "UPDATE ads SET score=?, rejected=?, tier=?, real_cost=? WHERE id=?",
+                (ad["score"], ad["rejected"], ad["tier"], ad["real_cost"], ad["id"]),
+            )
+            rescored += 1
+    conn.commit()
+    if rescored:
+        print(f"переоцінено після збагачення: {rescored}")
+
     dups = store.sweep_duplicates(conn)
     conn.commit()
     photo_dups, stolen = photo.group_by_photo(conn)
