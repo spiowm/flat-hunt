@@ -84,7 +84,10 @@ utilities_estimate:
 
 collector:
   user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
-  pages_per_search: 2
+  # Це стеля, а не робоче значення: збирач сам зупиняється, коли
+  # сторінка віддала менше повного набору. Дві сторінки, які стояли
+  # тут раніше, приховували третину двокімнатних — їх 115, а бачили ми 82.
+  pages_per_search: 8
   delay_between_requests: 3.0
   active_hours: [8, 22]      # локальний час, поза цим вікном збирач спить
 
