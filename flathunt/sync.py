@@ -109,6 +109,33 @@ def pull(conn, cli):
             store.mark_sent(conn, pair[0], pair[1])
             merged_ads += 1
 
+    # Оголошення теж треба забрати, інакше свіжий контейнер після
+    # деплою починає з порожньої бази: наново скрейпить, наново ганяє
+    # модель по сотні описів і кілька хвилин відповідає «нічого немає».
+    # Наявні локально не чіпаємо — їх оновить сам збирач.
+    known = {r["id"] for r in conn.execute("SELECT id FROM ads")}
+    cols = store.columns(conn)
+    restored = 0
+    for doc in db.ads.find():
+        ad_id = doc.get("id") or doc.get("_id")
+        if not ad_id or ad_id in known:
+            continue
+        payload = {k: v for k, v in doc.items()
+                   if k in cols and k not in ("first_seen", "last_seen")}
+        payload["id"] = ad_id
+        if not payload.get("source"):
+            payload["source"] = "olx"
+        if not payload.get("ext_id"):
+            payload["ext_id"] = str(ad_id).split(":")[-1]
+        try:
+            store.upsert(conn, payload)
+            restored += 1
+        except Exception:
+            continue
+    if restored:
+        conn.commit()
+    merged_ads += restored
+
     have = {r["q"] for r in conn.execute("SELECT q FROM geocache")}
     for doc in db.geocache.find():
         q = doc.get("q") or doc.get("_id")

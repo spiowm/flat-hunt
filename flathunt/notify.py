@@ -165,9 +165,12 @@ def card(ad, anchor=None):
     return "\n".join(lines)
 
 
-def digest(rows, title):
+def digest(rows, title, warming=False):
     """Компактний список для кнопок: одне оголошення — два рядки."""
     if not rows:
+        if warming:
+            return (f"<b>{title}</b>\n\nЩе збираю дані — база наповнюється після запуску. "
+                    "Спробуй за кілька хвилин.")
         return f"<b>{title}</b>\n\nЗараз нічого немає під фільтрами."
     out = [f"<b>{title}</b>", ""]
     for i, r in enumerate(rows, 1):

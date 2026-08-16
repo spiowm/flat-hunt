@@ -96,7 +96,10 @@ def poll(cfg, conn, recipients, timeout=0):
             continue
         key, title = target
         rows = top_for(conn, cfg, key, known[chat_id])
-        notify.send(cfg, notify.digest(rows, title), chat_id, keyboard=True)
+        # Порожня база після запуску й порожній результат — різні речі,
+        # і плутати їх у відповіді не можна.
+        total = conn.execute("SELECT count(*) FROM ads WHERE search_key = ?", (key,)).fetchone()[0]
+        notify.send(cfg, notify.digest(rows, title, warming=(total == 0)), chat_id, keyboard=True)
         answered += 1
 
     if last:
