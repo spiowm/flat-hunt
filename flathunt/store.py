@@ -249,6 +249,43 @@ def _norm_url(url):
     return u or None
 
 
+# Поля, які канонічне оголошення переймає з дубля, якщо в нього їх немає.
+# Дедуплікація не має бути втратою: копія з іншого джерела часто знає
+# те, чого не знає оригінал. Виміряно на живій базі — двадцять три
+# пари з тридцяти чотирьох втрачали категорії фото, дві телефон.
+INHERIT = ("phone", "photo_rooms", "commission", "utilities", "backup_power",
+           "deposit", "min_term", "area", "floor", "total_floors", "renovation")
+
+# Точність адреси за спаданням: координати від самого джерела кращі
+# за нашу здогадку по середині вулиці.
+CONF_RANK = {"вул+буд": 4, "модель+буд": 3, "вул": 2, "модель": 2,
+             "сумнівно": 1, "район": 0}
+
+
+def merge_from_duplicate(conn, canonical_id, dup_id):
+    """Переносить у канон те, чого в ньому немає, і кращі координати."""
+    can = conn.execute("SELECT * FROM ads WHERE id = ?", (canonical_id,)).fetchone()
+    dup = conn.execute("SELECT * FROM ads WHERE id = ?", (dup_id,)).fetchone()
+    if can is None or dup is None:
+        return 0
+
+    updates = {f: dup[f] for f in INHERIT if dup[f] is not None and can[f] is None}
+
+    # Координати переймаємо лише коли копія знає адресу точніше
+    if dup["lat"] is not None and CONF_RANK.get(dup["street_conf"], 0) > CONF_RANK.get(can["street_conf"], 0):
+        updates.update({"lat": dup["lat"], "lon": dup["lon"],
+                        "street_conf": dup["street_conf"],
+                        "dist_km": None, "walk_min": None, "walk_km": None})
+        if dup["street"]:
+            updates["street"] = dup["street"]
+
+    if not updates:
+        return 0
+    sets = ", ".join(f"{k} = ?" for k in updates)
+    conn.execute(f"UPDATE ads SET {sets} WHERE id = ?", list(updates.values()) + [canonical_id])
+    return 1
+
+
 def sweep_by_url(conn):
     """Склеює те, що прийшло двома шляхами: напряму з OLX і через ЛУН.
 
@@ -274,6 +311,7 @@ def sweep_by_url(conn):
         for other in members[1:]:
             conn.execute("UPDATE ads SET dup_of = ?, source_group = ? WHERE id = ?",
                          (canonical["id"], sources, other["id"]))
+            merge_from_duplicate(conn, canonical["id"], other["id"])
             marked += 1
         conn.execute("UPDATE ads SET source_group = ? WHERE id = ?", (sources, canonical["id"]))
     return marked
@@ -308,6 +346,7 @@ def sweep_duplicates(conn):
                 "UPDATE ads SET dup_of = ?, source_group = ? WHERE id = ?",
                 (canonical["id"], sources, other["id"]),
             )
+            merge_from_duplicate(conn, canonical["id"], other["id"])
             marked += 1
         if len(members) > 1:
             conn.execute("UPDATE ads SET source_group = ? WHERE id = ?", (sources, canonical["id"]))

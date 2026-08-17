@@ -99,10 +99,17 @@ def cmd_collect(args):
             store.log_run(conn, "olx", 0, 0, 0, f"{search['key']}: {exc}")
 
     try:
-        found = lun.collect(cfg["searches"], cfg)
+        # Повний обхід ЛУНа — це пʼятдесят запитів і три хвилини, тож
+        # раз на годину. Решту проходів вистачає перших сторінок: нове
+        # зʼявляється зверху, а глибина потрібна лише щоб не проґавити
+        # те, що ми ще жодного разу не бачили.
+        deep = datetime.now().minute < 10
+        found = lun.collect(cfg["searches"], cfg,
+                            max_pages=25 if deep else 3,
+                            delay=1.5 if deep else 1.0)
         if found:
             batches.append(("lun", found))
-            print(f"[lun] fetched {len(found)}")
+            print(f"[lun] fetched {len(found)}" + (" (deep)" if deep else ""))
     except Exception as exc:
         print(f"[lun] fetch failed: {exc}")
         store.log_run(conn, "lun", 0, 0, 0, str(exc))
@@ -246,6 +253,26 @@ def cmd_collect(args):
         print(f"duplicates: {dups} by address, {by_url} by url, {photo_dups} by photo")
     if stolen:
         print(f"suspected stolen photos: {stolen}")
+
+    # Саме тут, а не раніше: злиття дублів щойно могло дати канону
+    # точніші координати, і відстань треба рахувати вже від них.
+    stale = conn.execute(
+        "SELECT id, lat, lon FROM ads WHERE lat IS NOT NULL AND dist_km IS NULL LIMIT 80"
+    ).fetchall()
+    for row in stale:
+        dist = geo.haversine(cfg["anchor"]["lat"], cfg["anchor"]["lon"], row["lat"], row["lon"])
+        walk = geo.walk_route(conn, row["lat"], row["lon"], cfg)
+        conn.execute("UPDATE ads SET dist_km = ?, walk_min = ?, walk_km = ? WHERE id = ?",
+                     (round(dist, 2), walk[0] if walk else None, walk[1] if walk else None, row["id"]))
+    if stale:
+        for row in conn.execute("SELECT * FROM ads WHERE id IN (%s)" %
+                                ",".join("?" for _ in stale), [r["id"] for r in stale]).fetchall():
+            ad = dict(row)
+            score.evaluate(ad, cfg)
+            conn.execute("UPDATE ads SET score=?, rejected=?, tier=? WHERE id=?",
+                         (ad["score"], ad["rejected"], ad["tier"], row["id"]))
+        conn.commit()
+        print(f"recomputed distance after merge: {len(stale)}")
 
     if args.seed:
         chats = [r["chat_id"] for r in recipients(cfg)]

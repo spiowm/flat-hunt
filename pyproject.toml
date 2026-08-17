@@ -18,7 +18,7 @@ dependencies = [
 flat-hunt = "flathunt.cli:main"
 
 [dependency-groups]
-dev = ["ruff>=0.8"]
+dev = ["ruff>=0.8", "pytest>=8.0"]
 
 [tool.uv]
 package = true

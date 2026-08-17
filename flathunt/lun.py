@@ -22,6 +22,11 @@ from curl_cffi import requests as http
 from . import net
 
 BASE = "https://lun.ua/uk/rent/lviv/flats"
+
+# Шляхи за кімнатністю. Змішаний список довелося б гортати вдвічі
+# довше заради того самого: за окремими шляхами лежить 358 однокімнатних
+# і 355 двокімнатних, і жоден не вичерпується за пʼятнадцять сторінок.
+ROOM_PATH = {1: "flats-odnokimnatni", 2: "flats-dvokimnatni", 3: "flats-trykimnatni"}
 NBU_RATES = "https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange?json"
 IMAGE_CDN = "https://market-images.lunstatic.net/lun-ua/720/960/images/{}.webp"
 
@@ -97,8 +102,9 @@ def _cards_from_html(html):
     return out
 
 
-def fetch_page(session, page):
-    url = BASE if page == 1 else f"{BASE}?page={page}"
+def fetch_page(session, page, path=None):
+    base = f"https://lun.ua/uk/rent/lviv/{path}" if path else BASE
+    url = base if page == 1 else f"{base}?page={page}"
     html = net.with_retry(lambda: session.get(url).text)
     return _cards_from_html(html)
 
@@ -210,29 +216,33 @@ def _matches(ad, search):
     return search["price_min"] <= ad["price"] <= search["price_max"]
 
 
-def collect(searches, cfg, max_pages=12):
-    """Один прохід по сторінках ЛУНа, розкладений по конфігураціях."""
+def collect(searches, cfg, max_pages=25, delay=None):
+    """Прохід по ЛУНу окремо для кожної потрібної кімнатності.
+
+    Гортаємо до вичерпання, а не до фіксованого ліміту: сторінка, яка
+    не дала жодного нового оголошення, і є кінцем списку. Ліміт лишається
+    лише запобіжником від нескінченного циклу.
+    """
     session = _session()
-    delay = cfg["collector"]["delay_between_requests"]
-    seen, cards = set(), []
+    delay = cfg["collector"]["delay_between_requests"] if delay is None else delay
+    out, seen = [], set()
 
-    for page in range(1, max_pages + 1):
-        try:
-            batch = fetch_page(session, page)
-        except Exception:
-            break
-        fresh = [c for c in batch if c.get("id") not in seen]
-        for c in fresh:
-            seen.add(c["id"])
-        cards.extend(fresh)
-        if not fresh:
-            break
-        time.sleep(delay)
-
-    out = []
     for search in searches:
-        for card in cards:
-            ad = normalize(card, search)
-            if _matches(ad, search):
-                out.append(ad)
+        path = ROOM_PATH.get(search.get("rooms_count"))
+        if not path:
+            continue
+        for page in range(1, max_pages + 1):
+            try:
+                batch = fetch_page(session, page, path)
+            except Exception:
+                break
+            fresh = [c for c in batch if c.get("id") not in seen]
+            if not fresh:
+                break
+            for card in fresh:
+                seen.add(card["id"])
+                ad = normalize(card, search)
+                if _matches(ad, search):
+                    out.append(ad)
+            time.sleep(delay)
     return out
