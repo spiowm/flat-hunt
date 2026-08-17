@@ -152,8 +152,11 @@ def cmd_collect(args):
         # Оголошення, яких більше немає у видачі, після двох пропусків
         # вважаємо знятими. Робимо це лише для конфігурацій, які зібрались
         # успішно: інакше збій мережі позначив би зниклим геть усе.
-        if label not in ("dimria", "lun") and ads:
-            gone = store.mark_missing(conn, label, [a["id"] for a in ads])
+        # ЛУН теж треба перевіряти на зникнення, але кожен збирач
+        # відповідає лише за свої джерела
+        if label != "dimria" and ads:
+            key = ads[0].get("search_key") if label == "lun" else label
+            gone = store.mark_missing(conn, key, ads)
             if gone:
                 print(f"[{label}] gone from olx: {gone}")
             conn.commit()

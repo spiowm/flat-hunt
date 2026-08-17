@@ -173,30 +173,40 @@ def upsert(conn, ad):
     return is_new
 
 
-def mark_missing(conn, search_key, seen_ids, threshold=2):
-    """Позначає оголошення, які зникли з видачі OLX.
+def mark_missing(conn, search_key, ads, threshold=2):
+    """Позначає оголошення, які зникли з видачі.
 
-    Обережність тут принципова: одна мережева помилка не має ховати
-    пів бази, тому потрібні дві поспіль невдалі появи. Викликати можна
-    лише після успішного збору саме цієї конфігурації — інакше
-    порожній список означав би, що зникло все.
+    Область дії — пара «конфігурація + джерело», і це принципово.
+    Перша версія рахувала пропуски лише за конфігурацією, тож прохід
+    по OLX нараховував пропуск усім оголошенням ЛУНа: вони мають ті
+    самі r1 та r2, але в результатах OLX їх, звісно, немає. За два
+    проходи ціле нове джерело помирало повністю.
+
+    Обережність із порогом теж принципова: одна мережева помилка не
+    має ховати пів бази, тому потрібні дві поспіль невдалі появи.
     """
-    if not seen_ids:
+    if not ads:
+        return 0
+    seen_ids = [a["id"] for a in ads]
+    sources = sorted({a.get("source") for a in ads if a.get("source")})
+    if not sources:
         return 0
     marks = ",".join("?" for _ in seen_ids)
+    src = ",".join("?" for _ in sources)
     conn.execute(f"UPDATE ads SET misses = 0 WHERE id IN ({marks})", list(seen_ids))
     conn.execute(
         f"""UPDATE ads SET misses = ifnull(misses, 0) + 1
-            WHERE search_key = ? AND id NOT IN ({marks})""",
-        [search_key] + list(seen_ids),
+            WHERE search_key = ? AND source IN ({src}) AND id NOT IN ({marks})""",
+        [search_key] + sources + list(seen_ids),
     )
     # Зникнення живе в окремій колонці misses, а не в rejected. Перша
     # версія писала його саме туди — і крок переоцінки, який щопроходу
     # перераховує rejected, стирав позначку через хвилину після того,
     # як вона зʼявилась.
     return conn.execute(
-        "SELECT count(*) FROM ads WHERE search_key = ? AND ifnull(misses, 0) >= ?",
-        (search_key, threshold),
+        f"""SELECT count(*) FROM ads WHERE search_key = ? AND source IN ({src})
+            AND ifnull(misses, 0) >= ?""",
+        [search_key] + sources + [threshold],
     ).fetchone()[0]
 
 
