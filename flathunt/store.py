@@ -213,6 +213,11 @@ def mark_missing(conn, search_key, ads, threshold=2):
 MISS_LIMIT = 2
 
 
+def mark_gone(conn, ad_id):
+    """Виводить оголошення зі списків, не чіпаючи rejected."""
+    conn.execute("UPDATE ads SET misses = ? WHERE id = ?", (MISS_LIMIT, ad_id))
+
+
 def gone_clause(alias="a"):
     """Умова «оголошення ще у видачі» для запитів."""
     return f"ifnull({alias}.misses, 0) < {MISS_LIMIT}"

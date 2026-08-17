@@ -15,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-from . import commands, dimria, geo, llm, lun, notify, olx, photo, score, store, sync
+from . import alive, commands, dimria, geo, llm, lun, notify, olx, photo, score, store, sync
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -310,6 +310,15 @@ def deliver(cfg, conn):
     sent_total = 0
     for who in recipients(cfg):
         pending = store.pending_for(conn, who, default_min)
+        if not pending:
+            continue
+
+        # ЛУН показує оголошення, які першоджерело вже зняло: три мертві
+        # посилання дійшли до людини, поки лічильник пропусків мовчав.
+        # Тому перед надсиланням посилання перевіряється.
+        pending, dead = alive.prune(conn, pending, store.mark_gone)
+        if dead:
+            print(f"[{who['name']}] dead links skipped: {dead}")
         if not pending:
             continue
         sent = 0

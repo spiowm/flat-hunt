@@ -4,7 +4,7 @@
 й надійніше, бо не треба відповідати на запит у вікно в кілька секунд.
 Опитування вбудоване в цикл збирача — окремого процесу не потрібно.
 """
-from . import notify, store
+from . import alive, notify, store
 
 OFFSET_KEY = "telegram_offset"
 
@@ -96,6 +96,8 @@ def poll(cfg, conn, recipients, timeout=0):
             continue
         key, title = target
         rows = top_for(conn, cfg, key, known[chat_id])
+        # Список теж не має вести на зняті оголошення
+        rows, _ = alive.prune(conn, rows, store.mark_gone)
         # Порожня база після запуску й порожній результат — різні речі,
         # і плутати їх у відповіді не можна.
         total = conn.execute("SELECT count(*) FROM ads WHERE search_key = ?", (key,)).fetchone()[0]

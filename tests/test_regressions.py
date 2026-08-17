@@ -266,6 +266,40 @@ def test_owner_listing_justifies_no_commission():
     assert data["commission"] == "немає", "an owner charges no agency fee by definition"
 
 
+# --------------------------------------------------------------------------
+# Liveness check
+# --------------------------------------------------------------------------
+
+class FakeResponse:
+    def __init__(self, status, text=""):
+        self.status_code = status
+        self.text = text
+
+
+def test_removed_listing_is_detected(monkeypatch):
+    from flathunt import alive
+    monkeypatch.setattr(alive.http, "get", lambda *a, **k: FakeResponse(410))
+    assert alive.check("https://x/1") is False
+
+
+def test_live_page_is_not_killed_by_ui_translations(monkeypatch):
+    """OLX ships its whole translation dictionary into every page, so the
+    phrase about a removed listing appears on live pages too."""
+    from flathunt import alive
+    body = 'listing.removed":"Оголошення більше не доступне"'
+    monkeypatch.setattr(alive.http, "get", lambda *a, **k: FakeResponse(200, body))
+    assert alive.check("https://x/1") is True
+
+
+def test_network_failure_keeps_the_listing(monkeypatch):
+    from flathunt import alive
+
+    def boom(*a, **k):
+        raise RuntimeError("connection reset")
+    monkeypatch.setattr(alive.http, "get", boom)
+    assert alive.check("https://x/1") is None, "unknown must not hide a good listing"
+
+
 def test_booking_alone_is_not_a_prepayment_demand():
     from flathunt import risk
     flags = risk.flags({"title": "", "description": "Вільна, готова до бронювання та перегляду."})
