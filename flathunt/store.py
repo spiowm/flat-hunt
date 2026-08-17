@@ -128,7 +128,7 @@ def _migrate(conn):
         ("utilities", "TEXT"), ("deposit", "TEXT"), ("min_term", "TEXT"),
         ("restrictions", "TEXT"), ("backup_power", "TEXT"), ("real_cost", "INTEGER"),
         ("llm_done", "INTEGER"), ("price_prev", "INTEGER"), ("price_drop", "INTEGER"),
-        ("days_listed", "INTEGER"), ("misses", "INTEGER"),
+        ("days_listed", "INTEGER"), ("misses", "INTEGER"), ("phone", "TEXT"), ("photo_rooms", "TEXT"),
     ):
         if column not in have:
             conn.execute(f"ALTER TABLE ads ADD COLUMN {column} {decl}")
@@ -228,6 +228,45 @@ def _fingerprint(row):
         row["floor"],
         _norm_street(row["street"]),
     )
+
+
+def _norm_url(url):
+    """Однакове оголошення з різних джерел має однакове посилання."""
+    if not url:
+        return None
+    u = url.split("?")[0].rstrip("/").lower()
+    u = re.sub(r"^https?://(www\.)?", "", u)
+    return u or None
+
+
+def sweep_by_url(conn):
+    """Склеює те, що прийшло двома шляхами: напряму з OLX і через ЛУН.
+
+    Відбиток за адресою тут не працює: у карток ЛУНа, що походять з OLX,
+    поле header — це заголовок оголошення, а не вулиця, тож адреси немає
+    зовсім. Зате посилання те саме.
+    """
+    groups = {}
+    for r in conn.execute("SELECT id, url, source, first_seen FROM ads WHERE url IS NOT NULL"):
+        key = _norm_url(r["url"])
+        if key:
+            groups.setdefault(key, []).append(r)
+
+    marked = 0
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        # первинне джерело попереду: у нашого збирача OLX більше полів
+        members.sort(key=lambda r: (r["source"] not in ("olx", "dimria"), r["first_seen"] or ""))
+        canonical = members[0]
+        conn.execute("UPDATE ads SET dup_of = NULL WHERE id = ?", (canonical["id"],))
+        sources = ",".join(sorted({m["source"] for m in members}))
+        for other in members[1:]:
+            conn.execute("UPDATE ads SET dup_of = ?, source_group = ? WHERE id = ?",
+                         (canonical["id"], sources, other["id"]))
+            marked += 1
+        conn.execute("UPDATE ads SET source_group = ? WHERE id = ?", (sources, canonical["id"]))
+    return marked
 
 
 def sweep_duplicates(conn):

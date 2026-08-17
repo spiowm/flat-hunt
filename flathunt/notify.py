@@ -6,6 +6,7 @@ MarkdownV2 вимагає екранувати півтора десятка с�
 треба три символи, тож ризик зіпсувати картку через чужий текст нижчий.
 """
 import html
+import re
 
 import requests
 
@@ -143,6 +144,23 @@ def card(ad, anchor=None):
     # Вік оголошення й вік акаунта поруч: разом вони дають картину довіри
     # одним поглядом. Свіже оголошення з дводенного акаунта і свіже
     # оголошення з акаунта на десять років — зовсім різні речі.
+    # Телефон і склад фото приходять із ЛУНа. Телефон рятує від історії,
+    # коли оголошення знімають і зв'язатись уже нема як; склад фото прямо
+    # відповідає на питання «а чому кухню не сфоткали».
+    phone = _get(ad, "phone")
+    if phone:
+        digits = re.sub(r"\D", "", str(phone))
+        pretty = f"+{digits}" if digits.startswith("380") else str(phone)
+        lines.append(f'📞 <a href="tel:{pretty}">{pretty}</a>')
+
+    rooms_shot = _get(ad, "photo_rooms")
+    if rooms_shot:
+        missing = [w for w in ("кухня", "санвузол") if w not in rooms_shot]
+        line = f"📷 на фото: {html.escape(str(rooms_shot))}"
+        if missing:
+            line += f"  ·  <b>немає: {', '.join(missing)}</b>"
+        lines.append(line)
+
     timeline = [x for x in (_posted(_get(ad, "days_listed")),
                             (f"акаунт {_human_age(_get(ad, 'user_created'))}"
                              if _human_age(_get(ad, "user_created")) else None)) if x]

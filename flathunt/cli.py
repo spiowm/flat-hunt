@@ -15,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-from . import commands, dimria, geo, llm, notify, olx, photo, score, store, sync
+from . import commands, dimria, geo, llm, lun, notify, olx, photo, score, store, sync
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -99,6 +99,15 @@ def cmd_collect(args):
             store.log_run(conn, "olx", 0, 0, 0, f"{search['key']}: {exc}")
 
     try:
+        found = lun.collect(cfg["searches"], cfg)
+        if found:
+            batches.append(("lun", found))
+            print(f"[lun] fetched {len(found)}")
+    except Exception as exc:
+        print(f"[lun] fetch failed: {exc}")
+        store.log_run(conn, "lun", 0, 0, 0, str(exc))
+
+    try:
         ria = dimria.collect(cfg["searches"], cfg)
         if ria:
             batches.append(("dimria", ria))
@@ -143,7 +152,7 @@ def cmd_collect(args):
         # Оголошення, яких більше немає у видачі, після двох пропусків
         # вважаємо знятими. Робимо це лише для конфігурацій, які зібрались
         # успішно: інакше збій мережі позначив би зниклим геть усе.
-        if label != "dimria" and ads:
+        if label not in ("dimria", "lun") and ads:
             gone = store.mark_missing(conn, label, [a["id"] for a in ads])
             if gone:
                 print(f"[{label}] gone from olx: {gone}")
@@ -226,11 +235,12 @@ def cmd_collect(args):
     if suspicious:
         print(f"flagged fresh account with multiple ads: {suspicious}")
 
+    by_url = store.sweep_by_url(conn)
     dups = store.sweep_duplicates(conn)
     conn.commit()
     photo_dups, stolen = photo.group_by_photo(conn)
-    if dups or photo_dups:
-        print(f"duplicates: {dups} by address, {photo_dups} by photo")
+    if dups or photo_dups or by_url:
+        print(f"duplicates: {dups} by address, {by_url} by url, {photo_dups} by photo")
     if stolen:
         print(f"suspected stolen photos: {stolen}")
 
