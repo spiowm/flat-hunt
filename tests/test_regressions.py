@@ -724,3 +724,26 @@ def test_a_central_address_still_geocodes(conn, monkeypatch):
         [{"lat": "49.8472788", "lon": "24.0265686",
           "display_name": "площа Святого Теодора, Львів"}]))
     assert geo.geocode(conn, "Теодора", None, _geo_cfg()) == (49.8472788, 24.0265686)
+
+
+# --------------------------------------------------------------------------
+# The reply keyboard on the phone is persistent and outlives a rename
+# --------------------------------------------------------------------------
+
+def test_every_search_config_has_a_button():
+    """Конфігурацію додали, а кнопку — ні: трикімнатні не було як
+    подивитись, доки не прийде картка."""
+    from flathunt import cli, commands, notify
+    cfg = cli.load_config()
+    labels = {b["text"].lower() for row in notify.KEYBOARD["keyboard"] for b in row}
+    for search in cfg["searches"]:
+        assert any(commands.BUTTONS.get(x) and commands.BUTTONS[x][0] == search["key"]
+                   for x in labels), f"немає кнопки для {search['key']}"
+
+
+def test_old_button_labels_keep_working():
+    """Клавіатура в Telegram persistent: на телефоні лишається стара,
+    доки не прийде повідомлення з новою розміткою."""
+    from flathunt import commands
+    assert commands.BUTTONS["🔎 однокімнатні"][0] == "r1"
+    assert commands.BUTTONS["🔎 двокімнатні"][0] == "r2"
