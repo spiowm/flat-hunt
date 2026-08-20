@@ -1,7 +1,7 @@
 """Жорсткі відсіви та оцінка оголошення (0–100)."""
 import re
 
-from . import risk
+from . import layout, risk
 
 GOOD_RENOVATION = ("євроремонт", "дизайнерськ", "авторськ", "після ремонту", "новий ремонт")
 OK_RENOVATION = ("житловий стан", "косметичний")
@@ -218,10 +218,16 @@ def score(ad, cfg):
     if (ad.get("rooms") or 0) >= 2 and any(w in text for w in STUDIO):
         pts -= 12
 
-    layout = (ad.get("layout") or "").lower()
-    if (ad.get("rooms") or 0) >= 2 and (any(w in layout for w in WALKTHROUGH)
-                                        or any(w in text for w in WALKTHROUGH)):
+    # Планування. Для трикімнатної це головне питання: сенс у ній лише
+    # тоді, коли кімнати ізольовані. Здогад за площею карається легше
+    # за доведену прохідність — він усе-таки здогад.
+    verdict = layout.status(ad, cfg)
+    if verdict == layout.NO:
         pts -= 20
+    elif verdict == layout.MAYBE_NO:
+        pts -= 10
+    elif verdict == layout.YES and (ad.get("rooms") or 0) >= 3:
+        pts += 8
 
     # Довго висить — ринок його вже подивився й не взяв
     days = ad.get("days_listed") or 0
@@ -246,9 +252,10 @@ def evaluate(ad, cfg, median_ppm=None):
     ad["tier"] = tier_of(ad, cfg)
     ad["score"] = 0 if ad["rejected"] else score(ad, cfg)
 
-    layout_text = f"{_text(ad)} {(ad.get('layout') or '').lower()}"
-    if (ad.get("rooms") or 0) >= 2 and any(w in layout_text for w in WALKTHROUGH):
-        note = "прохідна кімната — по окремих кімнатах жити не вийде"
+    verdict = layout.status(ad, cfg)
+    ad["layout_status"] = verdict
+    if verdict in (layout.NO, layout.MAYBE_NO):
+        note = layout.WORD[verdict]
         existing = ad.get("restrictions")
         if note not in (existing or ""):
             ad["restrictions"] = "; ".join(filter(None, [existing, note]))

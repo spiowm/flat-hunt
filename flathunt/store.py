@@ -98,13 +98,14 @@ FIELDS = [
     "furniture", "house_type", "city", "district", "street", "street_conf", "lat",
     "lon", "dist_km", "is_business", "seller", "user_id", "user_created",
     "user_verified", "risk_flags", "risk_level", "map_url", "created_time",
+    "separate_rooms", "layout_status",
     "refresh_time", "photos", "score", "tier", "rejected", "dup_of",
 ]
 
 
 # Поля, де None означає «скасувати», а не «не знаю»
 CLEARABLE = {"rejected", "risk_level", "risk_flags", "dup_of", "price_drop",
-             "price_prev", "source_group"}
+             "price_prev", "source_group", "layout_status"}
 
 
 def now():
@@ -132,6 +133,7 @@ def _migrate(conn):
         ("restrictions", "TEXT"), ("backup_power", "TEXT"), ("real_cost", "INTEGER"),
         ("llm_done", "INTEGER"), ("price_prev", "INTEGER"), ("price_drop", "INTEGER"),
         ("days_listed", "INTEGER"), ("misses", "INTEGER"), ("phone", "TEXT"), ("photo_rooms", "TEXT"),
+        ("separate_rooms", "TEXT"), ("layout_status", "TEXT"),
     ):
         if column not in have:
             conn.execute(f"ALTER TABLE ads ADD COLUMN {column} {decl}")

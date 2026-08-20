@@ -120,7 +120,11 @@ def extract_ads(state):
 def _params_map(ad):
     out = {}
     for p in ad.get("params") or []:
-        out[p.get("key")] = p.get("value")
+        value = p.get("value")
+        # Здебільшого це рядок, але подекуди обʼєкт із підписом
+        if isinstance(value, dict):
+            value = value.get("label") or value.get("key")
+        out[p.get("key")] = value
     return out
 
 
@@ -161,7 +165,10 @@ def normalize(ad, search):
         "area": _num(p.get("total_area")),
         "floor": int(_num(p.get("floor"))) if _num(p.get("floor")) is not None else None,
         "total_floors": int(_num(p.get("total_floors"))) if _num(p.get("total_floors")) is not None else None,
-        "layout": p.get("flat_planning") or p.get("planning"),
+        # Ключ саме "layout": ані flat_planning, ані planning в OLX не
+        # існує, тож планування не діставалось жодного разу — колонка
+        # стояла порожня у всій базі, хоча сайт віддає його прямо тут.
+        "layout": p.get("layout") or p.get("flat_planning") or p.get("planning"),
         "renovation": p.get("flat_renovation") or p.get("renovation"),
         "furniture": p.get("furnish") or p.get("furniture"),
         "house_type": p.get("property_type_appartments_sale"),

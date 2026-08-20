@@ -164,7 +164,10 @@ def apply_to(ad, data):
     ad["restrictions"] = "; ".join(limits) or None
 
     ad["_utilities_estimate"] = data.get("utilities_estimate") or 0
-    ad["_separate_rooms"] = data.get("separate_rooms")
+    # Раніше це писалось у поле з підкресленням, яке upsert відкидає,
+    # тож висновок моделі про роздільність кімнат губився щоразу.
+    verdict = data.get("separate_rooms")
+    ad["separate_rooms"] = verdict if verdict in ("так", "ні") else None
     ad["llm_done"] = 1
     return ad
 
@@ -199,6 +202,7 @@ def enrich_pending(conn, cfg, limit=40):
             """UPDATE ads SET street = ?, street_conf = coalesce(?, street_conf),
                    commission = ?, utilities = ?, deposit = ?, min_term = ?,
                    restrictions = ?, backup_power = ?, llm_done = 1,
+                   separate_rooms = coalesce(?, separate_rooms),
                    lat = CASE WHEN ? THEN NULL ELSE lat END,
                    lon = CASE WHEN ? THEN NULL ELSE lon END,
                    dist_km = CASE WHEN ? THEN NULL ELSE dist_km END,
@@ -207,7 +211,7 @@ def enrich_pending(conn, cfg, limit=40):
                WHERE id = ?""",
             (ad.get("street"), ad.get("street_conf"), ad.get("commission"), ad.get("utilities"),
              ad.get("deposit"), ad.get("min_term"), ad.get("restrictions"),
-             ad.get("backup_power"),
+             ad.get("backup_power"), ad.get("separate_rooms"),
              street_changed, street_changed, street_changed, street_changed, street_changed,
              row["id"]),
         )

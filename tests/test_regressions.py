@@ -594,3 +594,133 @@ def test_each_search_band_is_counted_separately(conn):
 
     rows = {r["id"]: (r["misses"] or 0) for r in conn.execute("SELECT id, misses FROM ads")}
     assert rows == {"lun:a": 0, "lun:b": 0}, "обидві конфігурації бачили свої оголошення"
+
+
+# --------------------------------------------------------------------------
+# Isolated rooms: the whole point of a three-room flat shared with brothers
+# --------------------------------------------------------------------------
+
+def test_olx_planning_field_is_actually_read():
+    """Ключ називається layout. Код шукав flat_planning і planning,
+    яких в OLX немає, тож колонка стояла порожня у всій базі."""
+    from flathunt import olx
+    raw = {"id": 1, "params": [{"key": "layout", "value": "Роздільна"},
+                               {"key": "total_area", "value": "95 м²"}]}
+    assert olx._params_map(raw)["layout"] == "Роздільна"
+    ad = olx.normalize(raw, {"key": "r3", "rooms": "trehkomnatnye", "people": 3})
+    assert ad["layout"] == "Роздільна", "нормалізація мусить донести поле до бази"
+
+
+def test_planning_field_decides_before_anything_else(cfg):
+    from flathunt import layout
+    assert layout.status(base_ad(rooms=3, area=90, layout="Суміжна, прохідна"), cfg) == "ні"
+    assert layout.status(base_ad(rooms=3, area=50, layout="Роздільна"), cfg) == "так"
+
+
+def test_open_plan_is_not_separate_rooms(cfg):
+    """«Вільне планування» — порожня коробка без стін, а не готові кімнати."""
+    from flathunt import layout
+    assert layout.status(base_ad(rooms=3, area=90, layout="Вільне планування"), cfg) == "ні"
+
+
+def test_model_verdict_is_used_when_the_field_is_empty(cfg):
+    from flathunt import layout
+    ad = base_ad(rooms=3, area=90, layout=None, separate_rooms="ні")
+    assert layout.status(ad, cfg) == "ні"
+
+
+def test_small_three_room_is_guessed_walkthrough(cfg):
+    """До 65 м² прохідних 57-60%, від 65 м² роздільних 79-88%."""
+    from flathunt import layout
+    assert layout.status(base_ad(rooms=3, area=54, layout=None), cfg) == "мабуть ні"
+    assert layout.status(base_ad(rooms=3, area=80, layout=None), cfg) is None
+
+
+def test_area_guess_is_not_applied_to_two_room(cfg):
+    """Для двокімнатних залежності площі й планування немає."""
+    from flathunt import layout
+    assert layout.status(base_ad(rooms=2, area=40, layout=None), cfg) is None
+
+
+def test_guess_and_fact_are_scored_differently(cfg):
+    from flathunt import score
+    fact = base_ad(rooms=3, area=90, price=25000, search_key="r3",
+                   people=3, layout="Суміжна, прохідна")
+    guess = base_ad(rooms=3, area=54, price=25000, search_key="r3",
+                    people=3, layout=None)
+    clean = base_ad(rooms=3, area=90, price=25000, search_key="r3",
+                    people=3, layout="Роздільна")
+    cfg["searches"].append({"key": "r3", "rooms": "trehkomnatnye", "rooms_count": 3,
+                            "people": 3, "price_min": 20000, "price_max": 30000})
+    for ad in (fact, guess, clean):
+        score.evaluate(ad, cfg)
+    assert clean["score"] > guess["score"] > fact["score"]
+
+
+def test_walkthrough_is_flagged_but_never_rejected(cfg):
+    """Відсіювати прохідні жорстко не можна — так уже губився
+    найближчий до Анни варіант."""
+    from flathunt import score
+    cfg["searches"].append({"key": "r3", "rooms": "trehkomnatnye", "rooms_count": 3,
+                            "people": 3, "price_min": 20000, "price_max": 30000})
+    ad = base_ad(rooms=3, area=90, price=25000, search_key="r3", people=3,
+                 layout="Суміжна, прохідна", walk_min=15, street_conf="вул+буд")
+    score.evaluate(ad, cfg)
+    assert ad["rejected"] is None
+    assert "прохідні" in (ad["restrictions"] or "")
+
+
+def test_card_puts_the_layout_next_to_the_room_count():
+    from flathunt import notify
+    text = notify.card(base_ad(rooms=3, area=90, price=25000, street="Зелена, 5",
+                               layout_status="ні", people=3))
+    first = text.splitlines()[0]
+    assert "3-кімнатна" in first and "прохідні" in first
+
+
+def test_abbreviated_title_in_street_name(tmp_path):
+    """«вул.Кн.Ольги» давало назву «Кн»: регекс обривався на крапці,
+    і така картка вже пішла в розсилку."""
+    from flathunt import geo
+    assert geo.extract_street("Оренда по вул.Кн.Ольги-Л. Кобилиці", "")[0] == "Княгині Ольги"
+    assert geo.extract_street("вул. Св.Юра, 5", "")[:2] == ("Святого Юра", "5")
+
+
+def test_hyphenated_street_survives_the_initial_trim():
+    """Обрізати треба лише ініціал, а не другу частину назви."""
+    from flathunt import geo
+    assert geo.extract_street("вул. Шолом-Алейхема, 12", "")[0] == "Шолом-Алейхема"
+
+
+class _Resp:
+    def __init__(self, payload):
+        self._p = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._p
+
+
+def _geo_cfg():
+    return {"anchor": {"lat": 49.8431, "lon": 24.0149},
+            "geo": {"min_interval": 0, "nominatim_url": "http://x",
+                    "contact_email": "a@b.c"}}
+
+
+def test_geocoder_hit_in_a_suburban_village_is_refused(conn, monkeypatch):
+    """«вулиця Святого Теодора» знайшлась у Малечковичах за 10.7 км.
+    Рамка міста це пропускала: прямокутник 19 на 19 км, села влазять."""
+    from flathunt import geo
+    monkeypatch.setattr(geo.requests, "get", lambda *a, **k: _Resp(
+        [{"lat": "49.7561871", "lon": "23.9522207", "display_name": "Малечковичі"}]))
+    assert geo.geocode(conn, "Святого Теодора", None, _geo_cfg()) is None
+
+
+def test_a_central_address_still_geocodes(conn, monkeypatch):
+    from flathunt import geo
+    monkeypatch.setattr(geo.requests, "get", lambda *a, **k: _Resp(
+        [{"lat": "49.8472788", "lon": "24.0265686",
+          "display_name": "площа Святого Теодора, Львів"}]))
+    assert geo.geocode(conn, "Теодора", None, _geo_cfg()) == (49.8472788, 24.0265686)

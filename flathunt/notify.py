@@ -82,6 +82,12 @@ def card(ad, anchor=None):
     people = _get(ad, "people", 1) or 1
 
     head = ROOMS_WORD.get(rooms, f"{rooms}-кімнатна" if rooms else "квартира")
+    # Для дво- й трикімнатної планування вирішує так само, як кімнатність:
+    # прохідні кімнати означають, що жити по окремих не вийде. Тому
+    # позначка стоїть у першому ж рядку, а не десь у зауваженнях.
+    if (rooms or 0) >= 2:
+        head += {"так": " · роздільні", "ні": " · ⚠ прохідні",
+                 "мабуть ні": " · ⚠ мабуть прохідні"}.get(_get(ad, "layout_status"), "")
     lines = [f"🏠 <b>{head}</b> · {html.escape(str(street))}", ""]
 
     money = f"<b>{_money(price)} ₴</b>"

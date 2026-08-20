@@ -37,6 +37,18 @@ HOUSE_RE = re.compile(r"\s*,?\s*(\d{1,3}[А-ЯA-Zа-яa-z]?)\b")
 # інакше знаходиться під Дрогобичем)
 LVIV_BBOX = (49.75, 49.92, 23.90, 24.16)
 
+# Але сама рамка завелика: це прямокутник дев'ятнадцять на дев'ятнадцять
+# кілометрів, і приміські села в нього влазять. «Вулиця Святого Теодора»
+# знайшлась у Малечковичах за 10.7 км, і квартира з центру дістала
+# 160 хвилин ходьби та відсів. Тому додатково міряємо від якоря.
+#
+# Вісім кілометрів: наш найдальший тір — 90 хвилин пішки, а це 6.75 км
+# ДОРОГАМИ, тобто по прямій ще менше. Все, що далі за вісім, кандидатом
+# бути не може за жодних умов, тож нічого потрібного межа не ріже. Зате
+# хибна точка за десять кілометрів гірша за відсутність адреси: без неї
+# спрацював би запасний варіант із центром району.
+MAX_KM_FROM_ANCHOR = 8
+
 _last_request = [0.0]
 
 
@@ -54,15 +66,33 @@ def in_lviv(lat, lon):
     return a < lat < b and c < lon < d
 
 
+# Титули у назвах вулиць пишуть скорочено, і регекс обривався на крапці:
+# «вул.Кн.Ольги» давало назву «Кн». Одна така картка вже пішла в розсилку.
+ABBREV = {
+    "кн": "Княгині", "св": "Святого", "ген": "Генерала", "акад": "Академіка",
+    "митр": "Митрополита", "проф": "Професора", "марш": "Маршала",
+    "кор": "Короля", "єп": "Єпископа",
+}
+ABBREV_RE = re.compile(r"\b(" + "|".join(ABBREV) + r")\.\s*", re.IGNORECASE)
+
+# Ініціал у кінці назви — це вже сусідня вулиця з переліку:
+# «Кн.Ольги-Л. Кобилиці» це ріг двох вулиць, а не одна назва.
+TRAILING_INITIAL = re.compile(r"[\s\-]+[А-ЯІЇЄҐ]\.?$")
+
+
+def _expand(text):
+    return ABBREV_RE.sub(lambda m: ABBREV[m.group(1).lower()] + " ", text)
+
+
 def extract_street(title, description):
     """Повертає (назва, номер_будинку|None, впевненість, тип)."""
-    text = f"{title} . {description or ''}"
+    text = _expand(f"{title} . {description or ''}")
     m = STREET_RE.search(text)
     if m:
-        name = m.group("name").strip(" .,")
+        name = TRAILING_INITIAL.sub("", m.group("name").strip(" .,")).strip(" .,-")
         tail = text[m.end():m.end() + 12]
         h = HOUSE_RE.match(tail)
-        return name, (h.group(1) if h else None), "вул", _kind_of(m.group("kind"))
+        return name or None, (h.group(1) if h else None), "вул", _kind_of(m.group("kind"))
     return None, None, None, "вулиця"
 
 
@@ -125,7 +155,9 @@ def geocode(conn, name, house, cfg, kind="вулиця"):
         return None
 
     lat, lon = float(data[0]["lat"]), float(data[0]["lon"])
-    if not in_lviv(lat, lon):
+    limit = cfg.get("max_km_from_anchor", MAX_KM_FROM_ANCHOR)
+    too_far = haversine(cfg["anchor"]["lat"], cfg["anchor"]["lon"], lat, lon) > limit
+    if not in_lviv(lat, lon) or too_far:
         store.geocache_put(conn, query, None, None, "поза Львовом: " + data[0].get("display_name", ""))
         conn.commit()
         return None
