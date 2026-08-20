@@ -259,8 +259,38 @@ def district_point(conn, district, cfg):
     return (lat, lon)
 
 
+def _measure(conn, ad, cfg):
+    """Відстань і хвилини ходьби від уже відомої точки."""
+    lat, lon = ad["lat"], ad["lon"]
+    ad["dist_km"] = round(haversine(cfg["anchor"]["lat"], cfg["anchor"]["lon"], lat, lon), 2)
+    walk = walk_route(conn, lat, lon, cfg)
+    if walk:
+        ad["walk_min"], ad["walk_km"] = walk
+    return ad
+
+
 def locate(conn, ad, cfg):
     """Доповнює оголошення street/lat/lon/dist_km. Змінює ad на місці."""
+    # ЛУН і DIM.RIA віддають координати самого будинку. Витягувати
+    # вулицю з тексту й геокодувати її поверх цього означає проміняти
+    # точну адресу на здогад: на вибірці ЛУНа так з'їжджали дев'ять
+    # карток із дванадцяти, найгірша на 3.6 км. Квартира отримувала
+    # чужі хвилини ходьби й через них відсівалась.
+    #
+    # Найяскравіший приклад із DIM.RIA: в API стоїть «вул. Петра
+    # Полтави», а в описі продавець написав розмовне «вул. Патона
+    # ( Полтави )» — і регекс перемагав API.
+    if ad.get("coords_from_source") and ad.get("lat") and ad.get("lon"):
+        if not ad.get("street"):
+            # Адреси джерело не дало: назву з тексту беремо лише як
+            # підпис, точку не рухаємо.
+            name, house, _, _ = extract_street(ad.get("title"), ad.get("description"))
+            if name:
+                ad["street"] = f"{name}, {house}" if house else name
+        if not ad.get("street_conf"):
+            ad["street_conf"] = "вул"
+        return _measure(conn, ad, cfg)
+
     name, house, conf, kind = extract_street(ad.get("title"), ad.get("description"))
 
     if name:

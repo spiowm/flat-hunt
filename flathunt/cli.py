@@ -15,7 +15,8 @@ from pathlib import Path
 
 import yaml
 
-from . import alive, commands, dimria, geo, llm, lun, notify, olx, photo, score, store, sync
+from . import (alive, budget, commands, dimria, geo, llm, lun, notify, olx, photo,
+               score, store, sync)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -98,12 +99,14 @@ def cmd_collect(args):
             print(f"[{search['key']}] olx fetch failed: {exc}")
             store.log_run(conn, "olx", 0, 0, 0, f"{search['key']}: {exc}")
 
+    # Повний обхід ЛУНа — раз на годину; лише після нього список
+    # оголошень повний настільки, щоб судити про зникнення.
+    deep = datetime.now().minute < 10
     try:
         # Повний обхід ЛУНа — це пʼятдесят запитів і три хвилини, тож
         # раз на годину. Решту проходів вистачає перших сторінок: нове
         # зʼявляється зверху, а глибина потрібна лише щоб не проґавити
         # те, що ми ще жодного разу не бачили.
-        deep = datetime.now().minute < 10
         found = lun.collect(cfg["searches"], cfg,
                             max_pages=25 if deep else 3,
                             delay=1.5 if deep else 1.0)
@@ -114,14 +117,23 @@ def cmd_collect(args):
         print(f"[lun] fetch failed: {exc}")
         store.log_run(conn, "lun", 0, 0, 0, str(exc))
 
-    try:
-        ria = dimria.collect(cfg["searches"], cfg)
-        if ria:
-            batches.append(("dimria", ria))
-            print(f"[dimria] fetched {len(ria)}")
-    except Exception as exc:
-        print(f"[dimria] fetch failed: {exc}")
-        store.log_run(conn, "dimria", 0, 0, 0, str(exc))
+    # DIM.RIA має власний годинник: безкоштовний ключ дає лише 1000
+    # запитів на місяць, а збирач прокидається кожні десять хвилин.
+    ria_cfg = cfg.get("dimria") or {}
+    ria_live = {}
+    if ria_cfg.get("enabled", True) and budget.due(conn, dimria.SERVICE,
+                                                   ria_cfg.get("every_hours", 6)):
+        try:
+            ria, ria_live = dimria.collect(cfg["searches"], cfg, conn)
+            if ria:
+                batches.append(("dimria", ria))
+            spent_month, _ = budget.remaining(
+                conn, dimria.SERVICE,
+                ria_cfg.get("monthly_cap", 900), ria_cfg.get("hourly_cap", 25))
+            print(f"[dimria] fetched {len(ria)}, quota left this month {spent_month}")
+        except Exception as exc:
+            print(f"[dimria] fetch failed: {exc}")
+            store.log_run(conn, "dimria", 0, 0, 0, str(exc))
 
     for label, ads in batches:
 
@@ -140,6 +152,12 @@ def cmd_collect(args):
             # на центр району й записує гіршу точність поверх кращої.
             # Тому спершу підкладаємо вже відоме.
             prev = known.get(ad["id"])
+            # Але джерелу з власними координатами підкладати збережене
+            # не можна: воно знає адресу краще за нас, і саме через цей
+            # перезапис виправлення точки інакше не дійшло б до вже
+            # наявних рядків.
+            if ad.get("coords_from_source"):
+                prev = None
             if prev is not None and prev["street"]:
                 for field in ("street", "street_conf", "lat", "lon", "dist_km", "walk_min", "walk_km"):
                     if prev[field] is not None:
@@ -161,9 +179,24 @@ def cmd_collect(args):
         # успішно: інакше збій мережі позначив би зниклим геть усе.
         # ЛУН теж треба перевіряти на зникнення, але кожен збирач
         # відповідає лише за свої джерела
-        if label != "dimria" and ads:
-            key = ads[0].get("search_key") if label == "lun" else label
-            gone = store.mark_missing(conn, key, ads)
+        if label == "lun":
+            # Тільки після повного обходу. Неглибокий прохід бачить три
+            # сторінки зі ста оголошень, і решту записав би у зниклі:
+            # двох таких проходів досить, щоб між годинними глибокими
+            # обходами більшість ЛУНа була прихована від розсилки.
+            # І рахувати треба окремо по кожній конфігурації — у пакеті
+            # ЛУНа перемішані обидві, а раніше бралась лише перша.
+            if deep and ads:
+                by_key = {}
+                for ad in ads:
+                    by_key.setdefault(ad.get("search_key"), []).append(ad)
+                for key, part in by_key.items():
+                    gone = store.mark_missing(conn, key, part)
+                    if gone:
+                        print(f"[lun/{key}] gone from source: {gone}")
+                conn.commit()
+        elif label != "dimria" and ads:
+            gone = store.mark_missing(conn, label, ads)
             if gone:
                 print(f"[{label}] gone from olx: {gone}")
             conn.commit()
@@ -172,6 +205,18 @@ def cmd_collect(args):
         total_new += new_here
         if label != "dimria":
             print(f"[{label}] fetched {len(ads)}, new {new_here}")
+
+    # DIM.RIA рахуємо окремо: деталі ми беремо лише для нових оголошень,
+    # тож пакет — це не вся видача, і мітити зниклим за ним не можна.
+    # Зате пошук уже повернув повний список живих ідентифікаторів, і за
+    # ним зникнення видно безкоштовно.
+    for search_key, live in ria_live.items():
+        if not live:
+            continue  # порожня відповідь — це збій, а не зникнення всієї видачі
+        gone = store.mark_missing(conn, search_key, live)
+        if gone:
+            print(f"[dimria] gone from dom.ria: {gone}")
+        conn.commit()
 
     # Розбір описів моделлю: вулиця там, де регекс не впорався, плюс
     # комісія, комуналка й обмеження — усе це живе тільки у вільному тексті
@@ -483,9 +528,19 @@ def cmd_doctor(args):
     print("\n=== Gemini ===")
     print(f"  key set: {bool(cfg['llm'].get('gemini_key'))} | model: {cfg['llm'].get('model')}")
     print("\n=== DIM.RIA ===")
-    print(f"  key set: {bool(os.environ.get('RIA_API_KEY'))}")
-    print("\n=== Database ===")
     conn = store.connect()
+    ria = cfg.get("dimria") or {}
+    monthly, hourly = ria.get("monthly_cap", 900), ria.get("hourly_cap", 25)
+    month_left, hour_left = budget.remaining(conn, dimria.SERVICE, monthly, hourly)
+    used = budget.spent(conn, dimria.SERVICE, budget._month_start())
+    last = budget.last_spend(conn, dimria.SERVICE)
+    print(f"  key set: {bool(os.environ.get('RIA_API_KEY'))} | enabled: {ria.get('enabled', True)}")
+    # Їхній безкоштовний тариф — 1000 на місяць і 30 на годину, а
+    # перевищення блокує ключ, тож рахуємо з запасом
+    print(f"  quota: {used}/{monthly} used this month, {month_left} left "
+          f"({hour_left} left this hour)")
+    print(f"  last request: {last or 'ніколи'} | interval: {ria.get('every_hours', 6)} h")
+    print("\n=== Database ===")
     print(f"  file: {store.DB_PATH}")
     print(f"  ads: {conn.execute('SELECT count(*) FROM ads').fetchone()[0]}")
 

@@ -116,6 +116,18 @@ def push(conn, cli):
             ordered=False,
         )
 
+    # Витрати квоти зовнішніх API. Ключ DIM.RIA один на всі машини,
+    # тож локальний запуск і VPS мусять бачити витрати одне одного —
+    # інакше кожен вважає, що має повний ліміт, і разом вони його
+    # перевищують удвічі, а ключ блокують.
+    spend = [dict(r) for r in conn.execute("SELECT * FROM api_spend")]
+    if spend:
+        db.api_spend.bulk_write(
+            [UpdateOne({"_id": x["uid"]}, {"$set": {**x, "_id": x["uid"]}}, upsert=True)
+             for x in spend],
+            ordered=False,
+        )
+
     # Саме ця таблиця, а не колонка ads.notified, вирішує, чи піде
     # картка ще раз. Розсилка персональна, тож ключ — пара
     # оголошення й chat_id.
@@ -150,6 +162,16 @@ def pull(conn, cli):
         if pair[0] and pair[1] and pair not in have_sent:
             store.mark_sent(conn, pair[0], pair[1])
             merged_ads += 1
+
+    # Чужі витрати квоти — інакше друга машина почне місяць з нуля
+    have_spend = {r["uid"] for r in conn.execute("SELECT uid FROM api_spend")}
+    fresh = [(d["_id"], d.get("service"), d.get("ts"))
+             for d in db.api_spend.find({}, {"service": 1, "ts": 1})
+             if d["_id"] not in have_spend and d.get("ts")]
+    if fresh:
+        conn.executemany(
+            "INSERT OR IGNORE INTO api_spend (uid, service, ts) VALUES (?, ?, ?)", fresh)
+        conn.commit()
 
     # Оголошення теж треба забрати, інакше свіжий контейнер після
     # деплою починає з порожньої бази: наново скрейпить, наново ганяє

@@ -5,6 +5,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import budget
+
 # У контейнері вказуємо FLAT_HUNT_DB=/data/flats.db, щоб база жила в томі
 DB_PATH = Path(os.environ.get("FLAT_HUNT_DB")
                 or Path(__file__).resolve().parent.parent / "flats.db")
@@ -113,6 +115,7 @@ def connect(path=DB_PATH):
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    conn.executescript(budget.SCHEMA)
     _migrate(conn)
     return conn
 

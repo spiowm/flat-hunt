@@ -195,6 +195,8 @@ def normalize(card, search):
         "street_conf": conf,
         "lat": lat,
         "lon": lon,
+        # Точка самого будинку, а не здогад із тексту
+        "coords_from_source": True,
         "is_business": 0 if card.get("isOwner") else 1,
         "commission": _commission(card),
         "phone": phones[0] if phones else None,

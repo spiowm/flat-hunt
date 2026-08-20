@@ -304,3 +304,293 @@ def test_booking_alone_is_not_a_prepayment_demand():
     from flathunt import risk
     flags = risk.flags({"title": "", "description": "Вільна, готова до бронювання та перегляду."})
     assert "просить передоплату" not in flags
+
+
+# --------------------------------------------------------------------------
+# DIM.RIA: every field below was mapped wrong before the API was ever called
+# --------------------------------------------------------------------------
+
+# Скорочений реальний відповідь info/34701240, знята з живого API
+RIA_ITEM = {
+    "realty_id": 34701240,
+    "beautiful_url": "realty-dolgosrochnaya-arenda-kvartira-lvov-galitskiy-sheptitskih-ulitsa-34701240.html",
+    "street_name_uk": "вул. Шептицьких",
+    "building_number_str": "",
+    "building_number_for_map": 40,
+    "is_show_building_no": 1,
+    "latitude": 49.8370255, "longitude": 24.00674488, "radius_location": 0,
+    "price": 18000, "price_total": 18000, "currency_type_id": 3,
+    "priceArr": {"1": "401", "2": "343", "3": "18 000"},
+    "rooms_count": 2, "total_square_meters": 52, "floor": 1, "floors_count": 3,
+    "description_uk": "Оренда 2 кім.квартири по вул.Шептицьких, дві ізольовані кімнати.",
+    "publishing_date": "2026-08-20 13:09:44", "photos_count": 8,
+    "main_photo": "dom/photo/34120/3412076/341207652/341207652.jpg",
+    "city_name_uk": "Львів", "district_name_uk": "Галицький", "user_id": 17369909,
+}
+
+RIA_SEARCH = {"key": "r2", "rooms_count": 2, "people": 2,
+              "price_min": 13000, "price_max": 20000}
+
+
+def test_ria_house_number_comes_from_the_map_field():
+    """building_number_str порожній навіть там, де номер відомий."""
+    from flathunt import dimria
+    assert dimria._street(RIA_ITEM) == ("Шептицьких, 40", "вул+буд")
+
+
+def test_ria_street_type_prefix_is_stripped():
+    """«вул. Шептицьких» у полі адреси зламало б дедуплікацію з ЛУНом."""
+    from flathunt import dimria
+    street, _ = dimria._street({"street_name_uk": "просп. Шевченка"})
+    assert street == "Шевченка"
+
+
+def test_ria_price_is_read_in_hryvnia():
+    """priceUAH, на яке спирався попередній код, в API не існує."""
+    from flathunt import dimria
+    assert dimria._price_uah(RIA_ITEM) == 18000
+    # у доларовому оголошенні price — це долари, а гривня лежить у priceArr
+    assert dimria._price_uah({"price": 450, "currency_type_id": 1,
+                              "priceArr": {"1": "450", "3": "19 000"}}) == 19000
+
+
+def test_ria_blurred_coordinates_are_refused():
+    """Ненульовий радіус — це не адреса будинку, а пляма."""
+    from flathunt import dimria
+    assert dimria._coords(RIA_ITEM) == (49.8370255, 24.00674488)
+    assert dimria._coords({**RIA_ITEM, "radius_location": 500}) == (None, None)
+
+
+def test_ria_photo_url_is_built_from_the_slug():
+    """Шлях із main_photo веде на 415: CDN хоче слаґ оголошення."""
+    from flathunt import dimria
+    url = dimria._photo_url(RIA_ITEM)
+    assert url == ("https://cdn.riastatic.com/photosnew/dom/photo/"
+                   "dolgosrochnaya-arenda-kvartira-lvov-galitskiy-sheptitskih-ulitsa"
+                   "__341207652fl.jpg")
+
+
+def test_ria_listing_normalizes_into_the_common_schema():
+    from flathunt import dimria
+    ad = dimria.normalize(RIA_ITEM, RIA_SEARCH)
+    assert ad["id"] == "dimria:34701240"
+    assert ad["url"].startswith("https://dom.ria.com/uk/realty-")
+    assert ad["price"] == 18000 and ad["rooms"] == 2
+    assert ad["street"] == "Шептицьких, 40"
+    assert ad["is_business"] == 0, "оголошення без agency_id — від власника"
+    assert dimria._matches(ad, RIA_SEARCH)
+
+
+def test_ria_publishing_date_is_parseable():
+    """Дата приходить без T, і risk._age_days мусить її прийняти."""
+    from flathunt import dimria, risk
+    ad = dimria.normalize(RIA_ITEM, RIA_SEARCH)
+    assert risk._age_days(ad["created_time"]) is not None
+
+
+# --------------------------------------------------------------------------
+# The quota ledger: 1000 requests a month is easy to burn in a day
+# --------------------------------------------------------------------------
+
+def test_quota_is_shared_across_both_limits(conn):
+    from flathunt import budget
+    budget.charge(conn, "dimria", 10)
+    assert budget.allowance(conn, "dimria", monthly=900, hourly=25) == 15
+    budget.charge(conn, "dimria", 15)
+    assert budget.allowance(conn, "dimria", monthly=900, hourly=25) == 0
+
+
+def test_monthly_cap_wins_when_it_is_the_tighter_one(conn):
+    """Витрачене раніше цього місяця вже не тисне на годинний ліміт,
+    але місячний з'їдає — саме так квота й закінчується."""
+    import uuid
+    from datetime import timedelta
+
+    from flathunt import budget
+    earlier = (budget._now() - timedelta(days=3)).isoformat(timespec="seconds")
+    conn.executemany(
+        "INSERT INTO api_spend (uid, service, ts) VALUES (?, 'dimria', ?)",
+        [(uuid.uuid4().hex, earlier) for _ in range(898)])
+    conn.commit()
+    assert budget.allowance(conn, "dimria", monthly=900, hourly=25) == 2
+
+
+def test_spending_of_another_machine_counts(conn):
+    """Ключ один на VPS і на ноутбук — витрати мусять складатись."""
+    from flathunt import budget
+    budget.charge(conn, "dimria", 5)
+    budget.charge(conn, "dimria", 5)
+    assert budget.spent(conn, "dimria", budget._month_start()) == 10
+
+
+def test_collector_waits_out_its_interval(conn):
+    from flathunt import budget
+    assert budget.due(conn, "dimria", every_hours=6), "перший запуск дозволено"
+    budget.charge(conn, "dimria")
+    assert not budget.due(conn, "dimria", every_hours=6)
+
+
+def test_collector_stops_at_the_wallet_limit(conn, cfg, monkeypatch):
+    """Вичерпана квота зупиняє прохід, а не блокує ключ."""
+    from flathunt import dimria
+    cfg["dimria"] = {"monthly_cap": 900, "hourly_cap": 3, "delay": 0,
+                     "per_pass_details": 20}
+    monkeypatch.setenv("RIA_API_KEY", "x")
+    calls = []
+    monkeypatch.setattr(dimria, "_session", lambda: None)
+    monkeypatch.setattr(dimria, "search_ids",
+                        lambda s, k, w, search: (w.take(), calls.append("search"),
+                                                 ["1", "2", "3", "4"])[2])
+    monkeypatch.setattr(dimria, "fetch_one",
+                        lambda s, k, w, rid: (w.take(), calls.append(rid), RIA_ITEM)[2])
+
+    ads, live = dimria.collect(cfg["searches"], cfg, conn)
+    assert len(calls) == 3, f"витрачено рівно ліміт, а не більше: {calls}"
+    assert live, "живі ідентифікатори з успішного пошуку лишаються"
+
+
+def test_known_listing_is_never_fetched_twice(conn, cfg, monkeypatch):
+    """Квартира не переїжджає — платити за неї вдруге немає за що."""
+    from flathunt import dimria
+    store.upsert(conn, base_ad(id="dimria:34701240", source="dimria",
+                               ext_id="34701240", search_key="r2"))
+    conn.commit()
+    cfg["dimria"] = {"monthly_cap": 900, "hourly_cap": 25, "delay": 0,
+                     "per_pass_details": 20}
+    monkeypatch.setenv("RIA_API_KEY", "x")
+    fetched = []
+    monkeypatch.setattr(dimria, "_session", lambda: None)
+    monkeypatch.setattr(dimria, "search_ids",
+                        lambda s, k, w, search: (w.take(), ["34701240"])[1])
+    monkeypatch.setattr(dimria, "fetch_one",
+                        lambda s, k, w, rid: (w.take(), fetched.append(rid), RIA_ITEM)[2])
+
+    dimria.collect(cfg["searches"], cfg, conn)
+    assert fetched == [], "вже відоме оголошення не коштує жодного запиту"
+
+
+def test_disappearance_needs_no_detail_requests(conn, cfg, monkeypatch):
+    """Пошук і так вертає всі живі id — за зникнення платити не треба."""
+    from flathunt import dimria
+    cfg["dimria"] = {"monthly_cap": 900, "hourly_cap": 25, "delay": 0,
+                     "per_pass_details": 0}
+    monkeypatch.setenv("RIA_API_KEY", "x")
+    monkeypatch.setattr(dimria, "_session", lambda: None)
+    monkeypatch.setattr(dimria, "search_ids",
+                        lambda s, k, w, search: (w.take(), ["777"])[1])
+
+    _, live = dimria.collect(cfg["searches"], cfg, conn)
+    stub = live["r1"][0]
+    assert stub["id"] == "dimria:777" and stub["source"] == "dimria"
+
+
+# --------------------------------------------------------------------------
+# A source that knows the exact building must not be overruled by a regex
+# --------------------------------------------------------------------------
+
+class _Cfg(dict):
+    pass
+
+
+@pytest.fixture()
+def geocfg(cfg):
+    cfg["geo"] = {"walk_speed_kmh": 4.5}
+    return cfg
+
+
+def test_source_coordinates_survive_text_extraction(conn, geocfg, monkeypatch):
+    """ЛУН дає точку будинку; регекс із опису тягнув її за кілометри."""
+    from flathunt import geo
+    monkeypatch.setattr(geo, "walk_route", lambda *a, **k: (12, 0.9))
+    called = []
+    monkeypatch.setattr(geo, "geocode", lambda *a, **k: called.append(a) or (49.0, 24.9))
+
+    ad = base_ad(street="Кульпарківська", street_conf="вул",
+                 lat=49.81252, lon=23.98302, coords_from_source=True,
+                 title="Оренда на Стуса", description="поруч вул. Патона")
+    geo.locate(conn, ad, geocfg)
+
+    assert (ad["lat"], ad["lon"]) == (49.81252, 23.98302)
+    assert ad["street"] == "Кульпарківська"
+    assert called == [], "геокодер не потрібен, коли точка вже відома"
+    assert ad["walk_min"] == 12
+
+
+def test_source_point_without_address_keeps_the_point(conn, geocfg, monkeypatch):
+    """Картка ЛУНа з чужого сайту має координати, але замість адреси
+    заголовок. Назву з тексту беремо як підпис, точку не рухаємо."""
+    from flathunt import geo
+    monkeypatch.setattr(geo, "walk_route", lambda *a, **k: (30, 2.2))
+    ad = base_ad(street=None, street_conf=None, lat=49.81929, lon=24.04196,
+                 coords_from_source=True, title="Квартира на вул. Стуса, 5",
+                 description="")
+    geo.locate(conn, ad, geocfg)
+
+    assert (ad["lat"], ad["lon"]) == (49.81929, 24.04196)
+    assert ad["street"] == "Стуса, 5"
+    assert ad["street_conf"] == "вул"
+
+
+def test_olx_still_geocodes_from_text(conn, geocfg, monkeypatch):
+    """Без координат джерела все лишається як було."""
+    from flathunt import geo
+    monkeypatch.setattr(geo, "walk_route", lambda *a, **k: (20, 1.5))
+    monkeypatch.setattr(geo, "geocode", lambda *a, **k: (49.8431, 24.0149))
+    ad = base_ad(title="Оренда на вул. Зеленій, 12", description="")
+    geo.locate(conn, ad, geocfg)
+    assert ad["lat"] == 49.8431 and ad["street_conf"] == "вул+буд"
+
+
+def test_both_coordinate_sources_declare_themselves():
+    """Прапорець ставлять саме ті збирачі, що дають точку будинку."""
+    from flathunt import dimria, lun
+    ria = dimria.normalize(RIA_ITEM, RIA_SEARCH)
+    assert ria["coords_from_source"] is True
+    card = {"id": 1, "location": [24.0, 49.8], "header": "Варшавська вул., 201-А",
+            "price": 10000, "currency": "uah", "roomCount": 1}
+    assert lun.normalize(card, RIA_SEARCH)["coords_from_source"] is True
+
+
+# --------------------------------------------------------------------------
+# A shallow LUN pass sees three pages out of a hundred listings
+# --------------------------------------------------------------------------
+
+def test_partial_pass_must_not_declare_the_rest_gone(conn):
+    """Неглибокий обхід — не підстава ховати решту джерела.
+
+    Глибокий обхід ЛУНа робиться раз на годину, решта проходів беруть
+    три сторінки. Двох таких проходів вистачало, щоб усе, що не влізло
+    в перші сторінки, перейшло поріг і зникло з розсилки на пʼятдесят
+    хвилин щогодини.
+    """
+    for i in range(10):
+        store.upsert(conn, base_ad(id=f"lun:{i}", source="rieltor.ua", search_key="r1"))
+    conn.commit()
+
+    shallow = [base_ad(id="lun:0", source="rieltor.ua", search_key="r1")]
+    for _ in range(3):
+        store.mark_missing(conn, "r1", shallow)
+    conn.commit()
+
+    hidden = conn.execute(
+        f"SELECT count(*) n FROM ads a WHERE NOT ({store.gone_clause('a')})").fetchone()["n"]
+    assert hidden == 9, "саме цю поведінку й треба обходити на неглибокому проході"
+
+
+def test_each_search_band_is_counted_separately(conn):
+    """У пакеті ЛУНа перемішані обидві конфігурації, а бралась перша."""
+    store.upsert(conn, base_ad(id="lun:a", source="rieltor.ua", search_key="r1"))
+    store.upsert(conn, base_ad(id="lun:b", source="rieltor.ua", search_key="r2"))
+    conn.commit()
+
+    batch = [base_ad(id="lun:a", source="rieltor.ua", search_key="r1"),
+             base_ad(id="lun:b", source="rieltor.ua", search_key="r2")]
+    by_key = {}
+    for ad in batch:
+        by_key.setdefault(ad["search_key"], []).append(ad)
+    for key, part in by_key.items():
+        store.mark_missing(conn, key, part)
+    conn.commit()
+
+    rows = {r["id"]: (r["misses"] or 0) for r in conn.execute("SELECT id, misses FROM ads")}
+    assert rows == {"lun:a": 0, "lun:b": 0}, "обидві конфігурації бачили свої оголошення"
