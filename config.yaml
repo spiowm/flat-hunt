@@ -27,19 +27,19 @@ searches:
     rooms: odnokomnatnye
     rooms_count: 1
     people: 1
-    price_min: 7000
-    price_max: 12000
+    price_min: 8000
+    price_max: 13000
   - key: r2
     rooms: dvuhkomnatnye
     rooms_count: 2
     people: 2
     price_min: 13000
-    price_max: 20000
+    price_max: 23000
   - key: r3
     rooms: trehkomnatnye
     rooms_count: 3
     people: 3
-    price_min: 20000
+    price_min: 19000
     price_max: 30000
 
 # Жорсткі відсіви за районом/місцевістю (підрядок у назві району або тексті)
