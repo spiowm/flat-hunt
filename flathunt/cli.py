@@ -15,8 +15,7 @@ from pathlib import Path
 
 import yaml
 
-from . import (alive, budget, commands, dimria, geo, llm, lun, notify, olx, photo,
-               score, store, sync)
+from . import alive, budget, commands, dimria, geo, llm, lun, notify, olx, photo, score, store, sync
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -46,10 +45,21 @@ def load_env():
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+def _from_env(value):
+    """`${VAR}` у config.yaml → значення змінної. Незадана змінна дає порожній
+    рядок, а не буквальне `${VAR}`, яке пішло б у запит як справжній chat_id."""
+    value = os.path.expandvars(str(value or ""))
+    return "" if "${" in value else value
+
+
 def load_config():
     load_env()
     with open(CONFIG, encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
+    # Особисте (chat_id, пошта) живе в .env, а в yaml лише посилання на нього
+    cfg["geo"]["contact_email"] = _from_env(cfg["geo"].get("contact_email"))
+    for who in cfg["notify"].get("recipients") or []:
+        who["chat_id"] = _from_env(who.get("chat_id"))
     # Секрети завжди беруться з оточення й перекривають yaml
     cfg["notify"]["telegram_token"] = os.environ.get("TELEGRAM_TOKEN", "")
     # Запасний одержувач із .env, якщо в config.yaml список порожній
@@ -382,7 +392,7 @@ def deliver(cfg, conn):
 
 
 def cmd_report(args):
-    cfg = load_config()
+    load_config()  # заради .env: шлях до бази може бути задано там
     conn = store.connect()
     where = "" if args.all else "WHERE rejected IS NULL AND dup_of IS NULL"
     rows = conn.execute(
@@ -474,9 +484,8 @@ def cmd_test(args):
 
 def cmd_watch(args):
     """Нескінченний цикл для контейнера: збирає з інтервалом і шле нове."""
-    import time
-
     import threading
+    import time
 
     window = "цілодобово" if args.force else "робоче вікно з config.yaml"
     print(f"watch: interval {args.interval}s, {window}", flush=True)

@@ -130,32 +130,27 @@ collector:
 
 geo:
   nominatim_url: "https://nominatim.openstreetmap.org/search"
-  contact_email: "oleksiitatar@gmail.com"   # Nominatim просить контакт у User-Agent
+  contact_email: "${NOMINATIM_EMAIL}"      # з .env; Nominatim просить контакт у User-Agent
   min_interval: 1.2                          # секунд між запитами до Nominatim
 
 notify:
   # Токен береться з .env (TELEGRAM_TOKEN), тут його немає навмисно
   min_score: 45
 
-  # Кому і що слати. Кожен має власні фільтри: брату, якому потрібна
+  # Кому і що слати. Кожен має власні фільтри: співмешканцю, якому потрібна
   # тільки трикімнатна, однушки не приходять взагалі.
-  # chat_id дізнатись: написати боту, тоді `flat-hunt chatid`.
+  # chat_id не пишеться сюди напряму: тут посилання на змінну з .env.
+  # Дізнатись свій chat_id: написати боту, тоді `flat-hunt chatid`.
   recipients:
-    - name: Олексій
-      chat_id: "1073576903"
+    - name: я
+      chat_id: "${TELEGRAM_CHAT_ID}"
       searches: [r1, r2, r3]
       min_score: 45
       max_walk_min: 35
 
-    # Розкоментувати й вписати chat_id, коли брати напишуть боту
-    # - name: Брат
-    #   chat_id: ""
+    # Ще одержувач: додати FLATMATE_CHAT_ID у .env і розкоментувати
+    # - name: співмешканець
+    #   chat_id: "${FLATMATE_CHAT_ID}"
     #   searches: [r2, r3]      # тільки спільне житло
-    #   min_score: 55
-    #   max_walk_min: 30
-    #
-    # - name: Другий брат
-    #   chat_id: ""
-    #   searches: [r3]          # тільки трикімнатні
     #   min_score: 55
     #   max_walk_min: 30

@@ -1,5 +1,4 @@
 """Жорсткі відсіви та оцінка оголошення (0–100)."""
-import re
 
 from . import layout, risk
 

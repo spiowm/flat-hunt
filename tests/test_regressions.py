@@ -4,7 +4,6 @@ Every case here is a regression that reached production and cost either
 a missed flat or a wrong recommendation. They are written against the
 failure, not against the happy path.
 """
-import sqlite3
 
 import pytest
 

@@ -1,7 +1,7 @@
 [project]
 name = "flat-hunt"
 version = "0.2.0"
-description = "Пошук квартири у Львові біля церкви св. Анни з гео-фільтром і сповіщеннями в Telegram"
+description = "Пошук оренди квартири у Львові: збір із кількох джерел, LLM-розбір описів, оцінка й сповіщення в Telegram"
 requires-python = ">=3.12"
 dependencies = [
     "pyyaml>=6.0.2",

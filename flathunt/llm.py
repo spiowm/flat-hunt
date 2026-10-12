@@ -9,7 +9,6 @@
 мовчки нічого не робить, решта конвеєра працює як раніше.
 """
 import json
-import os
 
 import requests
 

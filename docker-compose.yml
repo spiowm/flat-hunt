@@ -6,6 +6,7 @@ services:
       # У Coolify задаються в UI, у git не потрапляють
       TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      NOMINATIM_EMAIL: ${NOMINATIM_EMAIL:-}
       MONGODB_URI: ${MONGODB_URI:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       RIA_API_KEY: ${RIA_API_KEY:-}
